@@ -29,7 +29,6 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import org.json.JSONArray
@@ -83,6 +82,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var status: TextView
     private lateinit var game: GameView
+    private lateinit var pad: TouchPad
     private lateinit var library: ScrollView
     private lateinit var libraryList: LinearLayout
     private lateinit var topBar: LinearLayout
@@ -90,6 +90,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnQuitGame: Button
     private lateinit var btnAspect: Button
     private lateinit var btnFull: Button
+    private lateinit var btnTouch: Button
     private lateinit var btnAdd: Button
     private lateinit var btnExit: Button
 
@@ -102,6 +103,12 @@ class MainActivity : AppCompatActivity() {
     private val aspectNames = arrayOf("Fit", "4:3", "Stretch", "Pixel-perfect")
     private var aspect = 0
     private var fullscreenPref = false
+
+    private val touchNames = arrayOf("Off", "Light", "Normal", "Bold")
+    private val touchOpacity = floatArrayOf(0f, 0.25f, 0.45f, 0.7f)
+    private var touchLevel = 2
+    private var padAutoHidden = false
+    private var touchMask = 0
 
     private val games = ArrayList<Game>()
 
@@ -149,6 +156,7 @@ class MainActivity : AppCompatActivity() {
         header = "NES core: ${nativeVersion()}  |  ${nativeCpuTest()}"
         aspect = prefs.getInt("aspect", 0).coerceIn(0, aspectNames.size - 1)
         fullscreenPref = prefs.getBoolean("fullscreen", false)
+        touchLevel = prefs.getInt("touch", 2).coerceIn(0, touchNames.size - 1)
 
         if (Build.VERSION.SDK_INT >= 28) {
             val attrs = window.attributes
@@ -159,18 +167,20 @@ class MainActivity : AppCompatActivity() {
 
         fun makeButton(action: () -> Unit) = Button(this).apply {
             isAllCaps = false
+            textSize = 12f
             setOnClickListener { action() }
         }
         btnLibrary = makeButton { showLibrary() }.apply { text = "Library" }
         btnQuitGame = makeButton { quitGame() }.apply { text = "Quit game" }
         btnAspect = makeButton { cycleAspect() }
         btnFull = makeButton { toggleFullscreen() }
+        btnTouch = makeButton { cycleTouch() }
         btnAdd = makeButton { addPicker.launch(arrayOf("*/*")) }.apply { text = "Add games" }
         btnExit = makeButton { quitApp() }.apply { text = "Exit app" }
 
         topBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            for (b in listOf(btnLibrary, btnQuitGame, btnAspect, btnFull, btnAdd, btnExit)) {
+            for (b in listOf(btnLibrary, btnQuitGame, btnAspect, btnFull, btnTouch, btnAdd, btnExit)) {
                 addView(b, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             }
         }
@@ -178,7 +188,22 @@ class MainActivity : AppCompatActivity() {
         game = GameView(this).apply {
             isFocusable = false
             mode = aspect
-            setOnClickListener { if (inGame && fullscreenPref) peekBars() }
+            setOnClickListener {
+                if (inGame) {
+                    if (padAutoHidden) {
+                        padAutoHidden = false
+                        updatePad()
+                    }
+                    if (fullscreenPref) peekBars()
+                }
+            }
+        }
+        pad = TouchPad(this).apply {
+            visibility = View.GONE
+            onMask = { m ->
+                touchMask = m
+                push(0)
+            }
         }
         libraryList = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -186,11 +211,14 @@ class MainActivity : AppCompatActivity() {
         }
         library = ScrollView(this).apply { addView(libraryList) }
 
+        val matchAll = {
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+        }
         val content = FrameLayout(this).apply {
-            addView(game, FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-            addView(library, FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            addView(game, matchAll())
+            addView(pad, matchAll())
+            addView(library, matchAll())
         }
         status = TextView(this).apply {
             textSize = 12f
@@ -247,7 +275,7 @@ class MainActivity : AppCompatActivity() {
         status.text = if (romStatus.isEmpty()) header else "$header\n$romStatus"
     }
 
-    // ---------------- Display options ----------------
+    // ---------------- Display and touch options ----------------
 
     private fun updateBar() {
         val g = if (inGame) View.VISIBLE else View.GONE
@@ -256,10 +284,12 @@ class MainActivity : AppCompatActivity() {
         btnQuitGame.visibility = g
         btnAspect.visibility = g
         btnFull.visibility = g
+        btnTouch.visibility = g
         btnAdd.visibility = l
         btnExit.visibility = l
         btnAspect.text = "Aspect: ${aspectNames[aspect]}"
         btnFull.text = "Fullscreen: ${if (fullscreenPref) "On" else "Off"}"
+        btnTouch.text = "Touch pad: ${touchNames[touchLevel]}"
     }
 
     private fun cycleAspect() {
@@ -268,6 +298,28 @@ class MainActivity : AppCompatActivity() {
         game.mode = aspect
         updateBar()
         if (fullscreenPref) peekBars()
+    }
+
+    private fun cycleTouch() {
+        touchLevel = (touchLevel + 1) % touchNames.size
+        prefs.edit().putInt("touch", touchLevel).apply()
+        padAutoHidden = false
+        updateBar()
+        updatePad()
+        if (fullscreenPref) peekBars()
+    }
+
+    private fun updatePad() {
+        val show = inGame && touchLevel > 0 && !padAutoHidden
+        pad.opacity = touchOpacity[touchLevel]
+        if (show) {
+            pad.visibility = View.VISIBLE
+        } else {
+            pad.visibility = View.GONE
+            pad.release()
+            touchMask = 0
+            push(0)
+        }
     }
 
     private fun toggleFullscreen() {
@@ -390,6 +442,7 @@ class MainActivity : AppCompatActivity() {
         game.visibility = View.GONE
         library.visibility = View.VISIBLE
         updateBar()
+        updatePad()
         applyFullscreen()
         rebuildLibrary()
         refreshStatus()
@@ -397,10 +450,12 @@ class MainActivity : AppCompatActivity() {
 
     private fun showGame() {
         inGame = true
+        padAutoHidden = false
         library.visibility = View.GONE
         game.visibility = View.VISIBLE
         romStatus = "Playing: $currentName"
         updateBar()
+        updatePad()
         applyFullscreen()
         refreshStatus()
         startEmu()
@@ -543,13 +598,16 @@ class MainActivity : AppCompatActivity() {
         else -> 0
     }
 
+    // Player 1 also receives the on-screen touch pad.
     private fun push(p: Int) {
-        nativeSetButtons(p, keyMask[p] or axisMask[p])
+        nativeSetButtons(p, keyMask[p] or axisMask[p] or (if (p == 0) touchMask else 0))
     }
 
     private fun clearInput() {
         keyMask.fill(0)
         axisMask.fill(0)
+        touchMask = 0
+        pad.release()
         nativeSetButtons(0, 0)
         nativeSetButtons(1, 0)
     }
@@ -557,6 +615,14 @@ class MainActivity : AppCompatActivity() {
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (!inGame || event.keyCode == KeyEvent.KEYCODE_BACK) {
             return super.dispatchKeyEvent(event)
+        }
+        // A real controller button hides the touch pad; tap the screen to bring it back.
+        if (event.action == KeyEvent.ACTION_DOWN &&
+            isPadSource(event.source) &&
+            pad.visibility == View.VISIBLE
+        ) {
+            padAutoHidden = true
+            updatePad()
         }
         val bit = buttonFor(event.keyCode)
         if (bit == 0) {
