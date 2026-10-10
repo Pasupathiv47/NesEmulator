@@ -49,6 +49,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var game: GameView
     private var header = ""
     private var romStatus = "No ROM loaded"
+    private var inputStatus = "Input: waiting for controller or key..."
     private var romLoaded = false
 
     private var emuThread: Thread? = null
@@ -103,7 +104,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun refresh() {
-        status.text = "$header\n$romStatus"
+        status.text = "$header\n$romStatus\n$inputStatus"
     }
 
     private fun startEmu() {
@@ -152,7 +153,14 @@ class MainActivity : AppCompatActivity() {
         startEmu()
     }
 
-    // ---- Input: NES bits A=1 B=2 Select=4 Start=8 Up=16 Down=32 Left=64 Right=128 ----
+    // ---- Input. NES bits: A=1 B=2 Select=4 Start=8 Up=16 Down=32 Left=64 Right=128 ----
+
+    private fun hasSource(src: Int, flag: Int) = (src and flag) == flag
+
+    private fun isPadSource(src: Int) =
+        hasSource(src, InputDevice.SOURCE_GAMEPAD) ||
+            hasSource(src, InputDevice.SOURCE_JOYSTICK) ||
+            hasSource(src, InputDevice.SOURCE_DPAD)
 
     private fun slotFor(deviceId: Int): Int {
         var i = deviceSlots.indexOf(deviceId)
@@ -163,14 +171,18 @@ class MainActivity : AppCompatActivity() {
         return if (i > 1) 1 else i
     }
 
-    private fun isGamepadSource(src: Int): Boolean =
-        (src and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD
+    private fun playerFor(src: Int, deviceId: Int): Int =
+        if (isPadSource(src)) slotFor(deviceId) else 0
 
     private fun buttonFor(keyCode: Int): Int = when (keyCode) {
-        KeyEvent.KEYCODE_BUTTON_A, KeyEvent.KEYCODE_BUTTON_B, KeyEvent.KEYCODE_X -> 1
-        KeyEvent.KEYCODE_BUTTON_X, KeyEvent.KEYCODE_BUTTON_Y, KeyEvent.KEYCODE_Z -> 2
-        KeyEvent.KEYCODE_BUTTON_SELECT, KeyEvent.KEYCODE_SHIFT_LEFT,
-        KeyEvent.KEYCODE_SHIFT_RIGHT -> 4
+        KeyEvent.KEYCODE_BUTTON_A, KeyEvent.KEYCODE_BUTTON_B,
+        KeyEvent.KEYCODE_BUTTON_R1, KeyEvent.KEYCODE_BUTTON_R2,
+        KeyEvent.KEYCODE_BUTTON_1, KeyEvent.KEYCODE_X, KeyEvent.KEYCODE_SPACE -> 1
+        KeyEvent.KEYCODE_BUTTON_X, KeyEvent.KEYCODE_BUTTON_Y,
+        KeyEvent.KEYCODE_BUTTON_L1, KeyEvent.KEYCODE_BUTTON_L2,
+        KeyEvent.KEYCODE_BUTTON_C, KeyEvent.KEYCODE_BUTTON_2, KeyEvent.KEYCODE_Z -> 2
+        KeyEvent.KEYCODE_BUTTON_SELECT, KeyEvent.KEYCODE_BUTTON_MODE,
+        KeyEvent.KEYCODE_SHIFT_LEFT, KeyEvent.KEYCODE_SHIFT_RIGHT -> 4
         KeyEvent.KEYCODE_BUTTON_START, KeyEvent.KEYCODE_ENTER -> 8
         KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_W -> 16
         KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_S -> 32
@@ -183,30 +195,25 @@ class MainActivity : AppCompatActivity() {
         nativeSetButtons(p, keyMask[p] or axisMask[p])
     }
 
-    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
-        val bit = buttonFor(keyCode)
-        if (bit != 0) {
-            val p = if (isGamepadSource(event.source)) slotFor(event.deviceId) else 0
-            keyMask[p] = keyMask[p] or bit
-            push(p)
-            return true
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val bit = buttonFor(event.keyCode)
+        if (bit == 0) return super.dispatchKeyEvent(event)
+
+        val p = playerFor(event.source, event.deviceId)
+        when (event.action) {
+            KeyEvent.ACTION_DOWN -> keyMask[p] = keyMask[p] or bit
+            KeyEvent.ACTION_UP -> keyMask[p] = keyMask[p] and bit.inv()
+            else -> return true
         }
-        return super.onKeyDown(keyCode, event)
+        push(p)
+        inputStatus = "Key ${KeyEvent.keyCodeToString(event.keyCode)} from " +
+            "${event.device?.name ?: "?"} -> P${p + 1}, mask=${keyMask[p] or axisMask[p]}"
+        refresh()
+        return true
     }
 
-    override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
-        val bit = buttonFor(keyCode)
-        if (bit != 0) {
-            val p = if (isGamepadSource(event.source)) slotFor(event.deviceId) else 0
-            keyMask[p] = keyMask[p] and bit.inv()
-            push(p)
-            return true
-        }
-        return super.onKeyUp(keyCode, event)
-    }
-
-    override fun onGenericMotionEvent(event: MotionEvent): Boolean {
-        if ((event.source and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK &&
+    override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
+        if (hasSource(event.source, InputDevice.SOURCE_JOYSTICK) &&
             event.action == MotionEvent.ACTION_MOVE
         ) {
             val p = slotFor(event.deviceId)
@@ -219,11 +226,15 @@ class MainActivity : AppCompatActivity() {
             if (x > 0.5f || hx > 0.5f) m = m or 128
             if (y < -0.5f || hy < -0.5f) m = m or 16
             if (y > 0.5f || hy > 0.5f) m = m or 32
-            axisMask[p] = m
-            push(p)
+            if (m != axisMask[p]) {
+                axisMask[p] = m
+                push(p)
+                inputStatus = "Stick/hat from ${event.device?.name ?: "?"} -> P${p + 1}, mask=${keyMask[p] or m}"
+                refresh()
+            }
             return true
         }
-        return super.onGenericMotionEvent(event)
+        return super.dispatchGenericMotionEvent(event)
     }
 
     external fun nativeVersion(): String
