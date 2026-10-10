@@ -11,6 +11,7 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
 import android.view.InputDevice
@@ -18,6 +19,7 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
@@ -27,6 +29,9 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -37,6 +42,13 @@ class GameView(context: Context) : View(context) {
     private val src = Rect(0, 0, 256, 240)
     private val dst = Rect()
 
+    // 0 = Fit, 1 = 4:3, 2 = Stretch, 3 = Pixel-perfect
+    var mode = 0
+        set(value) {
+            field = value
+            invalidate()
+        }
+
     fun submit(pixels: IntArray) {
         synchronized(lock) { bitmap.setPixels(pixels, 0, 256, 0, 0, 256, 240) }
         postInvalidate()
@@ -44,11 +56,22 @@ class GameView(context: Context) : View(context) {
 
     override fun onDraw(canvas: Canvas) {
         canvas.drawColor(Color.BLACK)
-        val scale = minOf(width / 256f, height / 240f)
-        val w = (256 * scale).toInt()
-        val h = (240 * scale).toInt()
-        val l = (width - w) / 2
-        val t = (height - h) / 2
+        val vw = width
+        val vh = height
+        val (w, h) = when (mode) {
+            1 -> if (vw * 3 > vh * 4) Pair(vh * 4 / 3, vh) else Pair(vw, vw * 3 / 4)
+            2 -> Pair(vw, vh)
+            3 -> {
+                val s = maxOf(1, minOf(vw / 256, vh / 240))
+                Pair(256 * s, 240 * s)
+            }
+            else -> {
+                val sc = minOf(vw / 256f, vh / 240f)
+                Pair((256 * sc).toInt(), (240 * sc).toInt())
+            }
+        }
+        val l = (vw - w) / 2
+        val t = (vh - h) / 2
         dst.set(l, t, l + w, t + h)
         synchronized(lock) { canvas.drawBitmap(bitmap, src, dst, paint) }
     }
@@ -62,12 +85,23 @@ class MainActivity : AppCompatActivity() {
     private lateinit var game: GameView
     private lateinit var library: ScrollView
     private lateinit var libraryList: LinearLayout
+    private lateinit var topBar: LinearLayout
+    private lateinit var btnLibrary: Button
+    private lateinit var btnQuitGame: Button
+    private lateinit var btnAspect: Button
+    private lateinit var btnFull: Button
+    private lateinit var btnAdd: Button
+    private lateinit var btnExit: Button
 
     private var header = ""
     private var romStatus = ""
     private var currentName = ""
     private var romLoaded = false
     private var inGame = false
+
+    private val aspectNames = arrayOf("Fit", "4:3", "Stretch", "Pixel-perfect")
+    private var aspect = 0
+    private var fullscreenPref = false
 
     private val games = ArrayList<Game>()
 
@@ -77,6 +111,15 @@ class MainActivity : AppCompatActivity() {
     private val keyMask = IntArray(2)
     private val axisMask = IntArray(2)
     private val deviceSlots = ArrayList<Int>()
+
+    private val prefs by lazy { getSharedPreferences("settings", MODE_PRIVATE) }
+
+    private val hideBars = Runnable {
+        if (inGame && fullscreenPref) {
+            topBar.visibility = View.GONE
+            status.visibility = View.GONE
+        }
+    }
 
     private val addPicker = registerForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments()
@@ -104,22 +147,39 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         header = "NES core: ${nativeVersion()}  |  ${nativeCpuTest()}"
+        aspect = prefs.getInt("aspect", 0).coerceIn(0, aspectNames.size - 1)
+        fullscreenPref = prefs.getBoolean("fullscreen", false)
 
-        fun bar(label: String, action: () -> Unit) = Button(this).apply {
-            text = label
+        if (Build.VERSION.SDK_INT >= 28) {
+            val attrs = window.attributes
+            attrs.layoutInDisplayCutoutMode =
+                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            window.attributes = attrs
+        }
+
+        fun makeButton(action: () -> Unit) = Button(this).apply {
+            isAllCaps = false
             setOnClickListener { action() }
         }
-        val topBar = LinearLayout(this).apply {
+        btnLibrary = makeButton { showLibrary() }.apply { text = "Library" }
+        btnQuitGame = makeButton { quitGame() }.apply { text = "Quit game" }
+        btnAspect = makeButton { cycleAspect() }
+        btnFull = makeButton { toggleFullscreen() }
+        btnAdd = makeButton { addPicker.launch(arrayOf("*/*")) }.apply { text = "Add games" }
+        btnExit = makeButton { quitApp() }.apply { text = "Exit app" }
+
+        topBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            addView(bar("Library") { if (inGame) showLibrary() else rebuildLibrary() },
-                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            addView(bar("Add games") { addPicker.launch(arrayOf("*/*")) },
-                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            addView(bar("Quit") { quitApp() },
-                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            for (b in listOf(btnLibrary, btnQuitGame, btnAspect, btnFull, btnAdd, btnExit)) {
+                addView(b, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            }
         }
 
-        game = GameView(this).apply { isFocusable = false }
+        game = GameView(this).apply {
+            isFocusable = false
+            mode = aspect
+            setOnClickListener { if (inGame && fullscreenPref) peekBars() }
+        }
         libraryList = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(24, 8, 24, 24)
@@ -173,8 +233,71 @@ class MainActivity : AppCompatActivity() {
         finishAndRemoveTask()
     }
 
+    // End the current game completely and go back to the library.
+    private fun quitGame() {
+        stopEmu()
+        nativeLoadRom(ByteArray(0))   // an empty ROM clears the emulator
+        romLoaded = false
+        currentName = ""
+        romStatus = "Game closed"
+        showLibrary()
+    }
+
     private fun refreshStatus() {
         status.text = if (romStatus.isEmpty()) header else "$header\n$romStatus"
+    }
+
+    // ---------------- Display options ----------------
+
+    private fun updateBar() {
+        val g = if (inGame) View.VISIBLE else View.GONE
+        val l = if (inGame) View.GONE else View.VISIBLE
+        btnLibrary.visibility = g
+        btnQuitGame.visibility = g
+        btnAspect.visibility = g
+        btnFull.visibility = g
+        btnAdd.visibility = l
+        btnExit.visibility = l
+        btnAspect.text = "Aspect: ${aspectNames[aspect]}"
+        btnFull.text = "Fullscreen: ${if (fullscreenPref) "On" else "Off"}"
+    }
+
+    private fun cycleAspect() {
+        aspect = (aspect + 1) % aspectNames.size
+        prefs.edit().putInt("aspect", aspect).apply()
+        game.mode = aspect
+        updateBar()
+        if (fullscreenPref) peekBars()
+    }
+
+    private fun toggleFullscreen() {
+        fullscreenPref = !fullscreenPref
+        prefs.edit().putBoolean("fullscreen", fullscreenPref).apply()
+        updateBar()
+        applyFullscreen()
+    }
+
+    private fun applyFullscreen() {
+        val on = inGame && fullscreenPref
+        val c = WindowInsetsControllerCompat(window, window.decorView)
+        game.removeCallbacks(hideBars)
+        if (on) {
+            c.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            c.hide(WindowInsetsCompat.Type.systemBars())
+            topBar.visibility = View.GONE
+            status.visibility = View.GONE
+        } else {
+            c.show(WindowInsetsCompat.Type.systemBars())
+            topBar.visibility = View.VISIBLE
+            status.visibility = View.VISIBLE
+        }
+    }
+
+    private fun peekBars() {
+        topBar.visibility = View.VISIBLE
+        status.visibility = View.VISIBLE
+        game.removeCallbacks(hideBars)
+        game.postDelayed(hideBars, 4000)
     }
 
     // ---------------- Library ----------------
@@ -266,6 +389,8 @@ class MainActivity : AppCompatActivity() {
         inGame = false
         game.visibility = View.GONE
         library.visibility = View.VISIBLE
+        updateBar()
+        applyFullscreen()
         rebuildLibrary()
         refreshStatus()
     }
@@ -275,6 +400,8 @@ class MainActivity : AppCompatActivity() {
         library.visibility = View.GONE
         game.visibility = View.VISIBLE
         romStatus = "Playing: $currentName"
+        updateBar()
+        applyFullscreen()
         refreshStatus()
         startEmu()
     }
