@@ -49,8 +49,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var game: GameView
     private var header = ""
     private var romStatus = "No ROM loaded"
-    private var inputStatus = "Input: waiting for controller or key..."
+    private var keyLine = "Key: none yet"
+    private var stickLine = "Stick: none yet"
     private var romLoaded = false
+    private var keyCount = 0
+    private var motionCount = 0
 
     private var emuThread: Thread? = null
     @Volatile private var running = false
@@ -104,7 +107,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun refresh() {
-        status.text = "$header\n$romStatus\n$inputStatus"
+        status.text = "$header\n$romStatus\n$keyLine  [keys=$keyCount]\n$stickLine  [motion=$motionCount]"
     }
 
     private fun startEmu() {
@@ -177,13 +180,17 @@ class MainActivity : AppCompatActivity() {
     private fun buttonFor(keyCode: Int): Int = when (keyCode) {
         KeyEvent.KEYCODE_BUTTON_A, KeyEvent.KEYCODE_BUTTON_B,
         KeyEvent.KEYCODE_BUTTON_R1, KeyEvent.KEYCODE_BUTTON_R2,
-        KeyEvent.KEYCODE_BUTTON_1, KeyEvent.KEYCODE_X, KeyEvent.KEYCODE_SPACE -> 1
+        KeyEvent.KEYCODE_BUTTON_1, KeyEvent.KEYCODE_DPAD_CENTER,
+        KeyEvent.KEYCODE_X, KeyEvent.KEYCODE_SPACE -> 1
         KeyEvent.KEYCODE_BUTTON_X, KeyEvent.KEYCODE_BUTTON_Y,
         KeyEvent.KEYCODE_BUTTON_L1, KeyEvent.KEYCODE_BUTTON_L2,
-        KeyEvent.KEYCODE_BUTTON_C, KeyEvent.KEYCODE_BUTTON_2, KeyEvent.KEYCODE_Z -> 2
+        KeyEvent.KEYCODE_BUTTON_C, KeyEvent.KEYCODE_BUTTON_2,
+        KeyEvent.KEYCODE_BUTTON_Z, KeyEvent.KEYCODE_Z -> 2
         KeyEvent.KEYCODE_BUTTON_SELECT, KeyEvent.KEYCODE_BUTTON_MODE,
+        KeyEvent.KEYCODE_BUTTON_THUMBL,
         KeyEvent.KEYCODE_SHIFT_LEFT, KeyEvent.KEYCODE_SHIFT_RIGHT -> 4
-        KeyEvent.KEYCODE_BUTTON_START, KeyEvent.KEYCODE_ENTER -> 8
+        KeyEvent.KEYCODE_BUTTON_START, KeyEvent.KEYCODE_BUTTON_THUMBR,
+        KeyEvent.KEYCODE_ENTER -> 8
         KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_W -> 16
         KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_S -> 32
         KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_A -> 64
@@ -196,18 +203,26 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        keyCount++
+        val fromPad = isPadSource(event.source)
         val bit = buttonFor(event.keyCode)
-        if (bit == 0) return super.dispatchKeyEvent(event)
+        val act = if (event.action == KeyEvent.ACTION_DOWN) "down" else "up"
+        keyLine = "Key ${KeyEvent.keyCodeToString(event.keyCode)} (${event.keyCode}) $act " +
+            "src=0x${Integer.toHexString(event.source)} dev=${event.device?.name ?: "?"}"
+
+        if (bit == 0) {
+            refresh()
+            return if (fromPad) true else super.dispatchKeyEvent(event)
+        }
 
         val p = playerFor(event.source, event.deviceId)
         when (event.action) {
             KeyEvent.ACTION_DOWN -> keyMask[p] = keyMask[p] or bit
             KeyEvent.ACTION_UP -> keyMask[p] = keyMask[p] and bit.inv()
-            else -> return true
+            else -> { refresh(); return true }
         }
         push(p)
-        inputStatus = "Key ${KeyEvent.keyCodeToString(event.keyCode)} from " +
-            "${event.device?.name ?: "?"} -> P${p + 1}, mask=${keyMask[p] or axisMask[p]}"
+        keyLine += " -> P${p + 1} mask=${keyMask[p] or axisMask[p]}"
         refresh()
         return true
     }
@@ -216,6 +231,7 @@ class MainActivity : AppCompatActivity() {
         if (hasSource(event.source, InputDevice.SOURCE_JOYSTICK) &&
             event.action == MotionEvent.ACTION_MOVE
         ) {
+            motionCount++
             val p = slotFor(event.deviceId)
             val x = event.getAxisValue(MotionEvent.AXIS_X)
             val y = event.getAxisValue(MotionEvent.AXIS_Y)
@@ -229,9 +245,10 @@ class MainActivity : AppCompatActivity() {
             if (m != axisMask[p]) {
                 axisMask[p] = m
                 push(p)
-                inputStatus = "Stick/hat from ${event.device?.name ?: "?"} -> P${p + 1}, mask=${keyMask[p] or m}"
-                refresh()
             }
+            stickLine = "Stick x=%.2f y=%.2f hat=%.0f,%.0f -> P%d mask=%d".format(
+                x, y, hx, hy, p + 1, keyMask[p] or m)
+            refresh()
             return true
         }
         return super.dispatchGenericMotionEvent(event)
