@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.RectF
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
@@ -40,6 +41,7 @@ class TouchPad(context: Context) : View(context) {
         isFakeBoldText = true
     }
     private val rect = RectF()
+    private val path = Path()
 
     // layout (recomputed from the view size)
     private var u = 1f
@@ -60,7 +62,7 @@ class TouchPad(context: Context) : View(context) {
     private fun layoutGeometry() {
         u = min(width, height) / 100f
         val m = min(5f * u, 24f * dp)
-        dR = min(20f * u, 80f * dp)
+        dR = min(22f * u, 88f * dp)
         dCx = m + dR
         dCy = height - m - dR
         br = min(10f * u, 42f * dp)
@@ -78,20 +80,28 @@ class TouchPad(context: Context) : View(context) {
     private fun inPill(x: Float, y: Float, cx: Float): Boolean =
         abs(x - cx) <= pillHw * 1.2f && abs(y - ssCy) <= pillHh * 1.8f
 
-    private fun maskAt(x: Float, y: Float): Int {
-        layoutGeometry()
-        var m = 0
+    // D-pad with a dead zone, narrow diagonals and "sticky" directions:
+    // a direction that is already held needs a smaller threshold to stay on
+    // than a new direction needs to switch on.
+    private fun dpadMask(x: Float, y: Float, prev: Int): Int {
         val dx = x - dCx
         val dy = y - dCy
         val d = hypot(dx, dy)
-        if (d <= dR * 1.35f && d > dR * 0.15f) {
-            val nx = dx / d
-            val ny = dy / d
-            if (nx > 0.4f) m = m or 128
-            if (nx < -0.4f) m = m or 64
-            if (ny > 0.4f) m = m or 32
-            if (ny < -0.4f) m = m or 16
-        }
+        if (d > dR * 1.35f || d < dR * 0.22f) return 0
+        val nx = dx / d
+        val ny = dy / d
+        fun on(v: Float, bit: Int): Boolean = v > (if ((prev and bit) != 0) 0.45f else 0.6f)
+        var m = 0
+        if (on(nx, 128)) m = m or 128
+        if (on(-nx, 64)) m = m or 64
+        if (on(ny, 32)) m = m or 32
+        if (on(-ny, 16)) m = m or 16
+        return m
+    }
+
+    private fun maskAt(x: Float, y: Float): Int {
+        layoutGeometry()
+        var m = dpadMask(x, y, mask)
         if (hypot(x - aCx, y - aCy) <= br * 1.45f) m = m or 1
         if (hypot(x - bCx, y - bCy) <= br * 1.45f) m = m or 2
         if (inPill(x, y, selCx)) m = m or 4
@@ -129,10 +139,27 @@ class TouchPad(context: Context) : View(context) {
         invalidate()
     }
 
-    private fun arm(c: Canvas, bit: Int, base: Int, hi: Int, l: Float, t: Float, r: Float, b: Float) {
+    private fun arrowButton(
+        c: Canvas, cx: Float, cy: Float, bit: Int,
+        dirX: Float, dirY: Float, base: Int, hi: Int
+    ) {
+        val s = dR * 0.27f
         fill.alpha = if ((mask and bit) != 0) hi else base
-        rect.set(l, t, r, b)
-        c.drawRoundRect(rect, u, u, fill)
+        rect.set(cx - s, cy - s, cx + s, cy + s)
+        c.drawRoundRect(rect, s * 0.35f, s * 0.35f, fill)
+
+        val t = s * 0.55f
+        val px = -dirY
+        val py = dirX
+        val bx = cx - dirX * t * 0.7f
+        val by = cy - dirY * t * 0.7f
+        path.reset()
+        path.moveTo(cx + dirX * t, cy + dirY * t)
+        path.lineTo(bx + px * t, by + py * t)
+        path.lineTo(bx - px * t, by - py * t)
+        path.close()
+        label.alpha = 200
+        c.drawPath(path, label)
     }
 
     private fun button(c: Canvas, cx: Float, cy: Float, bit: Int, text: String, base: Int, hi: Int) {
@@ -157,17 +184,17 @@ class TouchPad(context: Context) : View(context) {
         val base = (opacity * 255f).toInt().coerceIn(0, 255)
         val hi = min(255, base + 100)
 
-        // D-pad
-        fill.alpha = base / 3
+        // D-pad: outer ring + four separate arrow buttons
+        fill.alpha = base / 4
         c.drawCircle(dCx, dCy, dR, fill)
         stroke.strokeWidth = max(2f, u * 0.4f)
         stroke.alpha = base
         c.drawCircle(dCx, dCy, dR, stroke)
-        val w = dR * 0.3f
-        arm(c, 16, base, hi, dCx - w, dCy - dR * 0.92f, dCx + w, dCy - dR * 0.12f)
-        arm(c, 32, base, hi, dCx - w, dCy + dR * 0.12f, dCx + w, dCy + dR * 0.92f)
-        arm(c, 64, base, hi, dCx - dR * 0.92f, dCy - w, dCx - dR * 0.12f, dCy + w)
-        arm(c, 128, base, hi, dCx + dR * 0.12f, dCy - w, dCx + dR * 0.92f, dCy + w)
+        val off = dR * 0.62f
+        arrowButton(c, dCx, dCy - off, 16, 0f, -1f, base, hi)
+        arrowButton(c, dCx, dCy + off, 32, 0f, 1f, base, hi)
+        arrowButton(c, dCx - off, dCy, 64, -1f, 0f, base, hi)
+        arrowButton(c, dCx + off, dCy, 128, 1f, 0f, base, hi)
 
         // A / B
         button(c, bCx, bCy, 2, "B", base, hi)
