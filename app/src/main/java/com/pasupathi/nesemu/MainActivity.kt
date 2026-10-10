@@ -14,6 +14,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
+import android.view.Gravity
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -86,6 +87,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var library: ScrollView
     private lateinit var libraryList: LinearLayout
     private lateinit var topBar: LinearLayout
+    private lateinit var menuBtn: Button
     private lateinit var btnLibrary: Button
     private lateinit var btnQuitGame: Button
     private lateinit var btnAspect: Button
@@ -120,13 +122,6 @@ class MainActivity : AppCompatActivity() {
     private val deviceSlots = ArrayList<Int>()
 
     private val prefs by lazy { getSharedPreferences("settings", MODE_PRIVATE) }
-
-    private val hideBars = Runnable {
-        if (inGame && fullscreenPref) {
-            topBar.visibility = View.GONE
-            status.visibility = View.GONE
-        }
-    }
 
     private val addPicker = registerForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments()
@@ -188,13 +183,11 @@ class MainActivity : AppCompatActivity() {
         game = GameView(this).apply {
             isFocusable = false
             mode = aspect
+            // Tapping the screen only brings the touch pad back after a controller hid it.
             setOnClickListener {
-                if (inGame) {
-                    if (padAutoHidden) {
-                        padAutoHidden = false
-                        updatePad()
-                    }
-                    if (fullscreenPref) peekBars()
+                if (inGame && padAutoHidden) {
+                    padAutoHidden = false
+                    updatePad()
                 }
             }
         }
@@ -205,6 +198,17 @@ class MainActivity : AppCompatActivity() {
                 push(0)
             }
         }
+
+        // Small corner button, only shown while fullscreen is on.
+        menuBtn = Button(this).apply {
+            text = "\u2630  Menu"
+            isAllCaps = false
+            textSize = 12f
+            alpha = 0.5f
+            visibility = View.GONE
+            setOnClickListener { showMenu() }
+        }
+
         libraryList = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(24, 8, 24, 24)
@@ -218,6 +222,9 @@ class MainActivity : AppCompatActivity() {
         val content = FrameLayout(this).apply {
             addView(game, matchAll())
             addView(pad, matchAll())
+            addView(menuBtn, FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP or Gravity.END).apply { setMargins(0, 12, 12, 0) })
             addView(library, matchAll())
         }
         status = TextView(this).apply {
@@ -275,6 +282,33 @@ class MainActivity : AppCompatActivity() {
         status.text = if (romStatus.isEmpty()) header else "$header\n$romStatus"
     }
 
+    // ---------------- In-game menu (used in fullscreen) ----------------
+
+    private fun showMenu() {
+        if (!inGame) return
+        stopEmu()   // pause while the menu is open
+        val items = arrayOf(
+            "Library (pause game)",
+            "Quit game",
+            "Aspect: ${aspectNames[aspect]}",
+            "Fullscreen: ${if (fullscreenPref) "On" else "Off"}",
+            "Touch pad: ${touchNames[touchLevel]}"
+        )
+        AlertDialog.Builder(this)
+            .setTitle("Menu")
+            .setItems(items) { _, which ->
+                when (which) {
+                    0 -> showLibrary()
+                    1 -> quitGame()
+                    2 -> cycleAspect()
+                    3 -> toggleFullscreen()
+                    4 -> cycleTouch()
+                }
+            }
+            .setOnDismissListener { startEmu() }   // does nothing if we left the game
+            .show()
+    }
+
     // ---------------- Display and touch options ----------------
 
     private fun updateBar() {
@@ -297,7 +331,6 @@ class MainActivity : AppCompatActivity() {
         prefs.edit().putInt("aspect", aspect).apply()
         game.mode = aspect
         updateBar()
-        if (fullscreenPref) peekBars()
     }
 
     private fun cycleTouch() {
@@ -306,7 +339,6 @@ class MainActivity : AppCompatActivity() {
         padAutoHidden = false
         updateBar()
         updatePad()
-        if (fullscreenPref) peekBars()
     }
 
     private fun updatePad() {
@@ -332,24 +364,18 @@ class MainActivity : AppCompatActivity() {
     private fun applyFullscreen() {
         val on = inGame && fullscreenPref
         val c = WindowInsetsControllerCompat(window, window.decorView)
-        game.removeCallbacks(hideBars)
         if (on) {
             c.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             c.hide(WindowInsetsCompat.Type.systemBars())
             topBar.visibility = View.GONE
             status.visibility = View.GONE
+            menuBtn.visibility = View.VISIBLE
         } else {
             c.show(WindowInsetsCompat.Type.systemBars())
             topBar.visibility = View.VISIBLE
             status.visibility = View.VISIBLE
+            menuBtn.visibility = View.GONE
         }
-    }
-
-    private fun peekBars() {
-        topBar.visibility = View.VISIBLE
-        status.visibility = View.VISIBLE
-        game.removeCallbacks(hideBars)
-        game.postDelayed(hideBars, 4000)
     }
 
     // ---------------- Library ----------------
