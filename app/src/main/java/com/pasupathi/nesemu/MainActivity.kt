@@ -10,13 +10,15 @@ import androidx.appcompat.app.AppCompatActivity
 class MainActivity : AppCompatActivity() {
 
     private lateinit var info: TextView
+    private var header = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        header = "NES core: ${nativeVersion()}\n${nativeCpuTest()}"
         info = TextView(this).apply {
             textSize = 18f
             setPadding(32, 64, 32, 32)
-            text = "NES core: ${nativeVersion()}\nPress a controller button..."
+            text = "$header\n\nPress a controller button..."
         }
         setContentView(info)
     }
@@ -30,7 +32,7 @@ class MainActivity : AppCompatActivity() {
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
         if (isGamepad(event.source)) {
             val name = event.device?.name ?: "unknown"
-            info.text = "Device: $name\nButton: ${KeyEvent.keyCodeToString(keyCode)}"
+            info.text = "$header\n\nDevice: $name\nButton: ${KeyEvent.keyCodeToString(keyCode)}"
             return true
         }
         return super.onKeyDown(keyCode, event)
@@ -44,13 +46,14 @@ class MainActivity : AppCompatActivity() {
             val y = event.getAxisValue(MotionEvent.AXIS_Y)
             val hx = event.getAxisValue(MotionEvent.AXIS_HAT_X)
             val hy = event.getAxisValue(MotionEvent.AXIS_HAT_Y)
-            info.text = "Stick X=%.2f Y=%.2f\nHat X=%.0f Y=%.0f".format(x, y, hx, hy)
+            info.text = "$header\n\nStick X=%.2f Y=%.2f\nHat X=%.0f Y=%.0f".format(x, y, hx, hy)
             return true
         }
         return super.onGenericMotionEvent(event)
     }
 
     external fun nativeVersion(): String
+    external fun nativeCpuTest(): String
 
     companion object {
         init {
