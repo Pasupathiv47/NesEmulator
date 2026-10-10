@@ -1,10 +1,12 @@
 #include <jni.h>
 #include <string>
 #include <vector>
+#include <memory>
 #include <cstring>
 #include <cstdio>
 #include "cpu.h"
 #include "cartridge.h"
+#include "ppu.h"
 #include "nesbus.h"
 
 class TestBus : public Bus {
@@ -33,60 +35,38 @@ static std::string runCpuTest() {
     while (cpu.pc != 0x0612 && guard++ < 1000) cpu.step();
 
     bool ok = bus.ram[0x200] == 0x37 && bus.ram[0x201] == 0x42 && cpu.pc == 0x0612;
-    char buf[160];
-    snprintf(buf, sizeof(buf), "CPU test: %s (cycles=%llu)",
-             ok ? "PASS" : "FAIL", (unsigned long long)cpu.cycles);
-    return std::string(buf);
+    return ok ? "CPU test: PASS" : "CPU test: FAIL";
 }
 
-static std::string loadAndRun(const uint8_t* data, size_t n) {
+struct Emu {
     Cartridge cart;
-    std::string err = cart.load(data, n);
-    if (!err.empty()) return "ROM error: " + err;
+    PPU ppu;
+    NesBus bus;
+    CPU cpu;
+    Emu() : ppu(&cart), bus(&cart, &ppu), cpu(&bus) {}
+};
 
-    char head[128];
-    snprintf(head, sizeof(head), "ROM: mapper %d, PRG %dKB, CHR %dKB%s, %s mirroring",
-             cart.mapper, (int)(cart.prg.size() / 1024),
-             cart.chrRam ? 0 : (int)(cart.chr.size() / 1024),
-             cart.chrRam ? " (RAM)" : "",
-             cart.vertical ? "vertical" : "horizontal");
-    std::string out = head;
+static std::unique_ptr<Emu> g_emu;
 
-    if (cart.mapper != 0) {
-        out += "\nMapper not supported yet (only mapper 0 for now)";
-        return out;
+static void runFrame(Emu& e) {
+    int guard = 0;
+    while (!e.ppu.frameReady && guard++ < 200000) {
+        int cyc = e.cpu.step();
+        cyc += e.bus.stall;
+        e.bus.stall = 0;
+        for (int i = 0; i < cyc * 3; i++) e.ppu.tick();
+        if (e.ppu.nmiPending) {
+            e.ppu.nmiPending = false;
+            e.cpu.nmi();
+            for (int i = 0; i < 21; i++) e.ppu.tick();
+        }
     }
-
-    // nestest automatic mode: start at $C000, results in $02 and $03
-    NesBus bus(&cart);
-    CPU cpu(&bus);
-    cpu.pc = 0xC000;
-    cpu.sp = 0xFD;
-    cpu.p = 0x24;
-    cpu.cycles = 7;
-
-    int count = 0;
-    bool reachedEnd = false;
-    while (count < 8991) {
-        if (cpu.pc == 0xC6BD) { reachedEnd = true; break; }
-        cpu.step();
-        count++;
-    }
-
-    char res[200];
-    snprintf(res, sizeof(res),
-             "\nnestest: $02=%02X $03=%02X, %d instructions, pc=%04X%s",
-             bus.ram[2], bus.ram[3], count, cpu.pc,
-             reachedEnd ? ", reached end of official tests" : "");
-    out += res;
-    out += (reachedEnd && bus.ram[2] == 0) ? "\nOfficial opcodes: PASS"
-                                           : "\nOfficial opcodes: check $02 (00 = pass)";
-    return out;
+    e.ppu.frameReady = false;
 }
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_pasupathi_nesemu_MainActivity_nativeVersion(JNIEnv *env, jobject) {
-    return env->NewStringUTF("v0.3 (cartridge + bus)");
+    return env->NewStringUTF("v0.4 (PPU + display)");
 }
 
 extern "C" JNIEXPORT jstring JNICALL
@@ -99,5 +79,38 @@ Java_com_pasupathi_nesemu_MainActivity_nativeLoadRom(JNIEnv *env, jobject, jbyte
     jsize len = env->GetArrayLength(data);
     std::vector<uint8_t> buf((size_t)len);
     env->GetByteArrayRegion(data, 0, len, reinterpret_cast<jbyte*>(buf.data()));
-    return env->NewStringUTF(loadAndRun(buf.data(), buf.size()).c_str());
+
+    g_emu.reset();
+    std::unique_ptr<Emu> e(new Emu());
+    std::string err = e->cart.load(buf.data(), buf.size());
+    std::string out;
+    if (!err.empty()) {
+        out = "ROM error: " + err;
+    } else if (e->cart.mapper != 0) {
+        out = "Mapper " + std::to_string(e->cart.mapper) + " is not supported yet (only mapper 0)";
+    } else {
+        e->cpu.reset();
+        char head[160];
+        snprintf(head, sizeof(head), "ROM: mapper %d, PRG %dKB, CHR %dKB%s, %s mirroring",
+                 e->cart.mapper, (int)(e->cart.prg.size() / 1024),
+                 e->cart.chrRam ? 0 : (int)(e->cart.chr.size() / 1024),
+                 e->cart.chrRam ? " (RAM)" : "",
+                 e->cart.vertical ? "vertical" : "horizontal");
+        out = head;
+        g_emu = std::move(e);
+    }
+    return env->NewStringUTF(out.c_str());
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_pasupathi_nesemu_MainActivity_nativeRunFrame(JNIEnv *env, jobject, jintArray arr) {
+    if (!g_emu) return;
+    runFrame(*g_emu);
+    env->SetIntArrayRegion(arr, 0, 256 * 240, reinterpret_cast<const jint*>(g_emu->ppu.fb));
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_pasupathi_nesemu_MainActivity_nativeSetButtons(JNIEnv *env, jobject, jint player, jint mask) {
+    if (!g_emu || player < 0 || player > 1) return;
+    g_emu->bus.pad[player].store((uint8_t)mask);
 }
