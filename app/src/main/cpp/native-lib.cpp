@@ -7,6 +7,7 @@
 #include "cpu.h"
 #include "cartridge.h"
 #include "ppu.h"
+#include "apu.h"
 #include "nesbus.h"
 
 class TestBus : public Bus {
@@ -41,9 +42,10 @@ static std::string runCpuTest() {
 struct Emu {
     Cartridge cart;
     PPU ppu;
+    APU apu;
     NesBus bus;
     CPU cpu;
-    Emu() : ppu(&cart), bus(&cart, &ppu), cpu(&bus) {}
+    Emu() : ppu(&cart), bus(&cart, &ppu, &apu), cpu(&bus) { apu.setBus(&bus); }
 };
 
 static std::unique_ptr<Emu> g_emu;
@@ -54,10 +56,12 @@ static void runFrame(Emu& e) {
         int cyc = e.cpu.step();
         cyc += e.bus.stall;
         e.bus.stall = 0;
+        e.apu.tick(cyc);
         for (int i = 0; i < cyc * 3; i++) e.ppu.tick();
         if (e.ppu.nmiPending) {
             e.ppu.nmiPending = false;
             e.cpu.nmi();
+            e.apu.tick(7);
             for (int i = 0; i < 21; i++) e.ppu.tick();
         }
     }
@@ -66,7 +70,7 @@ static void runFrame(Emu& e) {
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_pasupathi_nesemu_MainActivity_nativeVersion(JNIEnv *env, jobject) {
-    return env->NewStringUTF("v0.4 (PPU + display)");
+    return env->NewStringUTF("v0.5 (sound + library)");
 }
 
 extern "C" JNIEXPORT jstring JNICALL
@@ -102,11 +106,17 @@ Java_com_pasupathi_nesemu_MainActivity_nativeLoadRom(JNIEnv *env, jobject, jbyte
     return env->NewStringUTF(out.c_str());
 }
 
-extern "C" JNIEXPORT void JNICALL
-Java_com_pasupathi_nesemu_MainActivity_nativeRunFrame(JNIEnv *env, jobject, jintArray arr) {
-    if (!g_emu) return;
+extern "C" JNIEXPORT jint JNICALL
+Java_com_pasupathi_nesemu_MainActivity_nativeRunFrame(JNIEnv *env, jobject,
+                                                      jintArray pixels, jshortArray audio) {
+    if (!g_emu) return 0;
     runFrame(*g_emu);
-    env->SetIntArrayRegion(arr, 0, 256 * 240, reinterpret_cast<const jint*>(g_emu->ppu.fb));
+    env->SetIntArrayRegion(pixels, 0, 256 * 240,
+                           reinterpret_cast<const jint*>(g_emu->ppu.fb));
+    int16_t tmp[2048];
+    int n = g_emu->apu.takeSamples(tmp, 2048);
+    env->SetShortArrayRegion(audio, 0, n, reinterpret_cast<const jshort*>(tmp));
+    return n;
 }
 
 extern "C" JNIEXPORT void JNICALL
