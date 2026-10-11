@@ -9,6 +9,7 @@
 #include "ppu.h"
 #include "apu.h"
 #include "nesbus.h"
+#include "state.h"
 
 class TestBus : public Bus {
 public:
@@ -70,7 +71,7 @@ static void runFrame(Emu& e) {
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_pasupathi_nesemu_MainActivity_nativeVersion(JNIEnv *env, jobject) {
-    return env->NewStringUTF("v0.5 (sound + library)");
+    return env->NewStringUTF("v0.6 (save states)");
 }
 
 extern "C" JNIEXPORT jstring JNICALL
@@ -123,4 +124,25 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_pasupathi_nesemu_MainActivity_nativeSetButtons(JNIEnv *env, jobject, jint player, jint mask) {
     if (!g_emu || player < 0 || player > 1) return;
     g_emu->bus.pad[player].store((uint8_t)mask);
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_pasupathi_nesemu_MainActivity_nativeSaveState(JNIEnv *env, jobject) {
+    if (!g_emu) return nullptr;
+    std::vector<uint8_t> out;
+    StateIO::save(out, g_emu->cpu, g_emu->ppu, g_emu->apu, g_emu->bus, g_emu->cart);
+    jbyteArray arr = env->NewByteArray((jsize)out.size());
+    env->SetByteArrayRegion(arr, 0, (jsize)out.size(), reinterpret_cast<const jbyte*>(out.data()));
+    return arr;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_pasupathi_nesemu_MainActivity_nativeLoadState(JNIEnv *env, jobject, jbyteArray data) {
+    if (!g_emu) return JNI_FALSE;
+    jsize len = env->GetArrayLength(data);
+    std::vector<uint8_t> buf((size_t)len);
+    env->GetByteArrayRegion(data, 0, len, reinterpret_cast<jbyte*>(buf.data()));
+    bool ok = StateIO::load(buf.data(), buf.size(), g_emu->cpu, g_emu->ppu,
+                            g_emu->apu, g_emu->bus, g_emu->cart);
+    return ok ? JNI_TRUE : JNI_FALSE;
 }
