@@ -34,6 +34,8 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
+import java.security.MessageDigest
 
 class GameView(context: Context) : View(context) {
     private val bitmap = Bitmap.createBitmap(256, 240, Bitmap.Config.ARGB_8888)
@@ -92,6 +94,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnVis: Button
     private lateinit var btnAction: Button
     private lateinit var menuBtn: Button
+    private lateinit var btnSaveExit: Button
     private lateinit var btnLibrary: Button
     private lateinit var btnQuitGame: Button
     private lateinit var btnAspect: Button
@@ -104,6 +107,7 @@ class MainActivity : AppCompatActivity() {
     private var header = ""
     private var romStatus = ""
     private var currentName = ""
+    private var currentGame: Game? = null
     private var romLoaded = false
     private var inGame = false
     private var editing = false
@@ -171,6 +175,7 @@ class MainActivity : AppCompatActivity() {
             textSize = 12f
             setOnClickListener { action() }
         }
+        btnSaveExit = makeButton { saveAndExit() }.apply { text = "Save & exit" }
         btnLibrary = makeButton { showLibrary() }.apply { text = "Library" }
         btnQuitGame = makeButton { quitGame() }.apply { text = "Quit game" }
         btnAspect = makeButton { cycleAspect() }
@@ -182,7 +187,7 @@ class MainActivity : AppCompatActivity() {
 
         topBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            for (b in listOf(btnLibrary, btnQuitGame, btnAspect, btnFull, btnTouch,
+            for (b in listOf(btnSaveExit, btnLibrary, btnQuitGame, btnAspect, btnFull, btnTouch,
                 btnEditPad, btnAdd, btnExit)) {
                 addView(b, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             }
@@ -301,19 +306,85 @@ class MainActivity : AppCompatActivity() {
         stopEmu()
     }
 
-    private fun quitApp() {
-        stopEmu()
-        finishAndRemoveTask()
+    // ---------------- Save / quit ----------------
+
+    private fun stateKey(g: Game): String {
+        val d = MessageDigest.getInstance("SHA-1").digest(g.uri.toByteArray())
+        return d.joinToString("") { "%02x".format(it) }.take(24)
     }
 
-    // End the current game completely and go back to the library.
-    private fun quitGame() {
+    private fun stateFile(g: Game): File {
+        val dir = File(filesDir, "states")
+        if (!dir.exists()) dir.mkdirs()
+        return File(dir, stateKey(g) + ".state")
+    }
+
+    private fun hasSave(g: Game): Boolean = stateFile(g).exists()
+
+    // Saves the running game; stops the emulator. Returns true on success.
+    private fun saveCurrentState(): Boolean {
+        val g = currentGame ?: return false
+        stopEmu()
+        val data = nativeSaveState() ?: return false
+        return try {
+            val f = stateFile(g)
+            val tmp = File(f.parentFile, f.name + ".tmp")
+            tmp.writeBytes(data)
+            if (f.exists()) f.delete()
+            tmp.renameTo(f)
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    private fun saveAndExit() {
+        if (currentGame == null || !romLoaded) return
+        val name = currentName
+        if (saveCurrentState()) {
+            closeGame("Saved \"$name\" - open it from the library to continue")
+        } else {
+            romStatus = "Could not save the game"
+            refreshStatus()
+            startEmu()
+        }
+    }
+
+    private fun closeGame(message: String) {
         stopEmu()
         nativeLoadRom(ByteArray(0))   // an empty ROM clears the emulator
         romLoaded = false
         currentName = ""
-        romStatus = "Game closed"
+        currentGame = null
+        romStatus = message
         showLibrary()
+    }
+
+    // Leave the game without saving.
+    private fun quitGame() {
+        closeGame("Game closed (not saved)")
+    }
+
+    private fun quitApp() {
+        stopEmu()
+        val g = currentGame
+        if (romLoaded && g != null) {
+            AlertDialog.Builder(this)
+                .setTitle("Exit app")
+                .setMessage("Save \"$currentName\" so you can continue it later?")
+                .setPositiveButton("Save & exit") { _, _ ->
+                    if (saveCurrentState()) {
+                        finishAndRemoveTask()
+                    } else {
+                        romStatus = "Could not save the game"
+                        refreshStatus()
+                    }
+                }
+                .setNegativeButton("Exit without saving") { _, _ -> finishAndRemoveTask() }
+                .setNeutralButton("Cancel", null)
+                .show()
+        } else {
+            finishAndRemoveTask()
+        }
     }
 
     private fun refreshStatus() {
@@ -384,8 +455,9 @@ class MainActivity : AppCompatActivity() {
         if (!inGame) return
         stopEmu()   // pause while the menu is open
         val items = arrayOf(
+            "Save & exit",
             "Library (pause game)",
-            "Quit game",
+            "Quit game (no save)",
             "Aspect: ${aspectNames[aspect]}",
             "Fullscreen: ${if (fullscreenPref) "On" else "Off"}",
             "Touch pad: ${touchNames[touchLevel]}",
@@ -395,12 +467,13 @@ class MainActivity : AppCompatActivity() {
             .setTitle("Menu")
             .setItems(items) { _, which ->
                 when (which) {
-                    0 -> showLibrary()
-                    1 -> quitGame()
-                    2 -> cycleAspect()
-                    3 -> toggleFullscreen()
-                    4 -> cycleTouch()
-                    5 -> enterEdit()
+                    0 -> saveAndExit()
+                    1 -> showLibrary()
+                    2 -> quitGame()
+                    3 -> cycleAspect()
+                    4 -> toggleFullscreen()
+                    5 -> cycleTouch()
+                    6 -> enterEdit()
                 }
             }
             .setOnDismissListener { startEmu() }   // does nothing if we left the game or are editing
@@ -412,6 +485,7 @@ class MainActivity : AppCompatActivity() {
     private fun updateBar() {
         val g = if (inGame) View.VISIBLE else View.GONE
         val l = if (inGame) View.GONE else View.VISIBLE
+        btnSaveExit.visibility = g
         btnLibrary.visibility = g
         btnQuitGame.visibility = g
         btnAspect.visibility = g
@@ -511,6 +585,46 @@ class MainActivity : AppCompatActivity() {
     private fun lp() = LinearLayout.LayoutParams(
         ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
+    private fun headerRow(title: String, actionLabel: String?, action: () -> Unit): LinearLayout {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(8, 24, 8, 4)
+            addView(TextView(this@MainActivity).apply {
+                text = title
+                textSize = 14f
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            if (actionLabel != null) {
+                addView(Button(this@MainActivity).apply {
+                    text = actionLabel
+                    isAllCaps = false
+                    textSize = 12f
+                    setOnClickListener { action() }
+                }, LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            }
+        }
+    }
+
+    private fun gameRow(g: Game): LinearLayout {
+        val saved = hasSave(g)
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(Button(this@MainActivity).apply {
+                text = (if (saved) "\uD83D\uDCBE  " else "") + g.name
+                isAllCaps = false
+                gravity = Gravity.START or Gravity.CENTER_VERTICAL
+                setOnClickListener { onGameTap(g) }
+                setOnLongClickListener { confirmDelete(g); true }
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(Button(this@MainActivity).apply {
+                text = "\u2715"
+                setOnClickListener { confirmDelete(g) }
+            }, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+    }
+
     private fun rebuildLibrary() {
         libraryList.removeAllViews()
 
@@ -530,28 +644,90 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
+        val recent = games.filter { it.lastPlayed > 0L }
+            .sortedByDescending { it.lastPlayed }
+            .take(10)
+        libraryList.addView(
+            headerRow("Recently played", if (recent.isNotEmpty()) "Clear list" else null) {
+                confirmClearRecent()
+            }, lp())
+        if (recent.isEmpty()) {
+            libraryList.addView(TextView(this).apply {
+                text = "No recently played games"
+                textSize = 13f
+                setPadding(8, 8, 8, 8)
+            }, lp())
+        } else {
+            for (g in recent) libraryList.addView(gameRow(g), lp())
+        }
+
+        libraryList.addView(headerRow("All games  (${games.size})", null) {}, lp())
+        for (g in games.sortedBy { it.name.lowercase() }) libraryList.addView(gameRow(g), lp())
+
         libraryList.addView(TextView(this).apply {
-            text = "Recent games  (tap to play, long-press to remove)"
-            textSize = 13f
+            text = "\uD83D\uDCBE = saved game   \u00B7   \u2715 removes a game from the library (your ROM file stays on the phone)"
+            textSize = 11f
             setPadding(8, 24, 8, 8)
         }, lp())
+    }
 
-        for (g in games.sortedByDescending { it.lastPlayed }) {
-            libraryList.addView(Button(this).apply {
-                text = g.name
-                isAllCaps = false
-                setOnClickListener { playGame(g) }
-                setOnLongClickListener { confirmRemove(g); true }
-            }, lp())
+    private fun onGameTap(g: Game) {
+        if (hasSave(g)) {
+            AlertDialog.Builder(this)
+                .setTitle(g.name)
+                .setMessage("You have a saved game.")
+                .setPositiveButton("Continue") { _, _ -> playGame(g, true) }
+                .setNegativeButton("Start over") { _, _ -> playGame(g, false) }
+                .setNeutralButton("Delete save") { _, _ -> confirmDeleteSave(g) }
+                .show()
+        } else {
+            playGame(g, false)
         }
     }
 
-    private fun confirmRemove(g: Game) {
+    private fun confirmDeleteSave(g: Game) {
         AlertDialog.Builder(this)
-            .setTitle("Remove from library?")
+            .setTitle("Delete saved game?")
             .setMessage(g.name)
-            .setPositiveButton("Remove") { _, _ ->
+            .setPositiveButton("Delete") { _, _ ->
+                stateFile(g).delete()
+                romStatus = "Saved game deleted: ${g.name}"
+                refreshStatus()
+                rebuildLibrary()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun confirmDelete(g: Game) {
+        val extra = if (hasSave(g)) "\n\nIts saved game will also be deleted." else ""
+        AlertDialog.Builder(this)
+            .setTitle("Delete from library?")
+            .setMessage(g.name + extra)
+            .setPositiveButton("Delete") { _, _ ->
+                if (currentGame === g) {
+                    nativeLoadRom(ByteArray(0))
+                    romLoaded = false
+                    currentName = ""
+                    currentGame = null
+                }
                 games.remove(g)
+                stateFile(g).delete()
+                saveLibrary()
+                romStatus = "Deleted: ${g.name}"
+                refreshStatus()
+                rebuildLibrary()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun confirmClearRecent() {
+        AlertDialog.Builder(this)
+            .setTitle("Clear recently played?")
+            .setMessage("Your games and saved games stay in the library. Only this list is cleared.")
+            .setPositiveButton("Clear") { _, _ ->
+                for (g in games) g.lastPlayed = 0L
                 saveLibrary()
                 rebuildLibrary()
             }
@@ -589,7 +765,7 @@ class MainActivity : AppCompatActivity() {
         startEmu()
     }
 
-    private fun playGame(g: Game) {
+    private fun playGame(g: Game, resume: Boolean) {
         stopEmu()
         inGame = false
         try {
@@ -599,15 +775,37 @@ class MainActivity : AppCompatActivity() {
             } else {
                 val res = nativeLoadRom(bytes)
                 if (res.startsWith("ROM:")) {
+                    var note = ""
+                    if (resume) {
+                        var ok = false
+                        val f = stateFile(g)
+                        if (f.exists()) {
+                            try {
+                                ok = nativeLoadState(f.readBytes())
+                            } catch (e: Exception) {
+                                ok = false
+                            }
+                        }
+                        if (!ok) {
+                            nativeLoadRom(bytes)   // start clean again
+                            note = "  (could not restore the save - started a new game)"
+                        }
+                    }
                     romLoaded = true
                     currentName = g.name
+                    currentGame = g
                     g.lastPlayed = System.currentTimeMillis()
                     saveLibrary()
                     clearInput()
                     showGame()
+                    if (note.isNotEmpty()) {
+                        romStatus += note
+                        refreshStatus()
+                    }
                     return
                 } else {
                     romLoaded = false
+                    currentGame = null
                     romStatus = "${g.name}: $res"
                 }
             }
@@ -795,6 +993,8 @@ class MainActivity : AppCompatActivity() {
     external fun nativeLoadRom(data: ByteArray): String
     external fun nativeRunFrame(pixels: IntArray, audio: ShortArray): Int
     external fun nativeSetButtons(player: Int, mask: Int)
+    external fun nativeSaveState(): ByteArray?
+    external fun nativeLoadState(data: ByteArray): Boolean
 
     companion object {
         init {
