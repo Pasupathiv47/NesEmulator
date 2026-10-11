@@ -65,13 +65,19 @@ static void runFrame(Emu& e) {
             e.apu.tick(7);
             for (int i = 0; i < 21; i++) e.ppu.tick();
         }
+        // mapper IRQ (MMC3 scanline counter)
+        if (e.cart.irqLine() && !(e.cpu.p & 0x04)) {
+            e.cpu.irq();
+            e.apu.tick(7);
+            for (int i = 0; i < 21; i++) e.ppu.tick();
+        }
     }
     e.ppu.frameReady = false;
 }
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_pasupathi_nesemu_MainActivity_nativeVersion(JNIEnv *env, jobject) {
-    return env->NewStringUTF("v0.6 (save states)");
+    return env->NewStringUTF("v0.7 (mappers)");
 }
 
 extern "C" JNIEXPORT jstring JNICALL
@@ -91,16 +97,15 @@ Java_com_pasupathi_nesemu_MainActivity_nativeLoadRom(JNIEnv *env, jobject, jbyte
     std::string out;
     if (!err.empty()) {
         out = "ROM error: " + err;
-    } else if (e->cart.mapper != 0) {
-        out = "Mapper " + std::to_string(e->cart.mapper) + " is not supported yet (only mapper 0)";
+    } else if (!Cartridge::supported(e->cart.mapper)) {
+        out = "Mapper " + std::to_string(e->cart.mapper) + " is not supported yet";
     } else {
         e->cpu.reset();
         char head[160];
-        snprintf(head, sizeof(head), "ROM: mapper %d, PRG %dKB, CHR %dKB%s, %s mirroring",
+        snprintf(head, sizeof(head), "ROM: mapper %d, PRG %dKB, CHR %dKB%s",
                  e->cart.mapper, (int)(e->cart.prg.size() / 1024),
                  e->cart.chrRam ? 0 : (int)(e->cart.chr.size() / 1024),
-                 e->cart.chrRam ? " (RAM)" : "",
-                 e->cart.vertical ? "vertical" : "horizontal");
+                 e->cart.chrRam ? " (RAM)" : "");
         out = head;
         g_emu = std::move(e);
     }
