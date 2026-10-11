@@ -11,7 +11,7 @@
 
 namespace {
 const uint32_t MAGIC = 0x53534E45;
-const uint32_t VERSION = 1;
+const uint32_t VERSION = 2;
 
 struct Writer {
     std::vector<uint8_t>& o;
@@ -54,7 +54,8 @@ void StateIO::save(std::vector<uint8_t>& out, const CPU& cpu, const PPU& ppu,
     wr.put((uint32_t)cart.prg.size());
     wr.put((uint32_t)cart.chr.size());
     wr.put((uint8_t)(cart.chrRam ? 1 : 0));
-    wr.put((uint8_t)cart.mapper);
+    wr.put((uint32_t)cart.mapper);
+    wr.put(cart.ms);   // mapper registers
 
     // CPU
     wr.put(cpu.pc);
@@ -117,8 +118,8 @@ bool StateIO::load(const uint8_t* data, size_t n, CPU& cpu, PPU& ppu,
                    APU& apu, NesBus& bus, Cartridge& cart) {
     Reader rd{data, data + n};
 
-    uint32_t magic = 0, version = 0, prgSize = 0, chrSize = 0;
-    uint8_t chrRam = 0, mapper = 0;
+    uint32_t magic = 0, version = 0, prgSize = 0, chrSize = 0, mapper = 0;
+    uint8_t chrRam = 0;
     rd.get(magic);
     rd.get(version);
     rd.get(prgSize);
@@ -127,8 +128,10 @@ bool StateIO::load(const uint8_t* data, size_t n, CPU& cpu, PPU& ppu,
     rd.get(mapper);
     if (!rd.ok || magic != MAGIC || version != VERSION) return false;
     if (prgSize != cart.prg.size() || chrSize != cart.chr.size() ||
-        chrRam != (uint8_t)(cart.chrRam ? 1 : 0) || mapper != (uint8_t)cart.mapper)
+        chrRam != (uint8_t)(cart.chrRam ? 1 : 0) || mapper != (uint32_t)cart.mapper)
         return false;
+
+    rd.get(cart.ms);
 
     // CPU
     rd.get(cpu.pc);
