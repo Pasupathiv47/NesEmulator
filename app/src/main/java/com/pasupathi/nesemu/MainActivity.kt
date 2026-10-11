@@ -7,6 +7,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Rect
+import android.graphics.Typeface
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
@@ -22,6 +23,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.Button
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -81,13 +83,18 @@ class GameView(context: Context) : View(context) {
 
 data class Game(val uri: String, val name: String, var lastPlayed: Long)
 
+// A named touch-pad layout. layout == null means the built-in default.
+class Profile(var name: String, var layout: String?)
+
 class MainActivity : AppCompatActivity() {
 
     private lateinit var status: TextView
     private lateinit var game: GameView
     private lateinit var pad: TouchPad
-    private lateinit var library: ScrollView
+    private lateinit var library: LinearLayout
     private lateinit var libraryList: LinearLayout
+    private lateinit var btnTabRecent: Button
+    private lateinit var btnTabAll: Button
     private lateinit var topBar: LinearLayout
     private lateinit var editBar: LinearLayout
     private lateinit var editLabel: TextView
@@ -100,6 +107,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnAspect: Button
     private lateinit var btnFull: Button
     private lateinit var btnTouch: Button
+    private lateinit var btnProfile: Button
     private lateinit var btnEditPad: Button
     private lateinit var btnAdd: Button
     private lateinit var btnExit: Button
@@ -111,6 +119,8 @@ class MainActivity : AppCompatActivity() {
     private var romLoaded = false
     private var inGame = false
     private var editing = false
+    private var libTab = 0          // 0 = Recently played, 1 = Game library
+    private var openDialogs = 0
 
     private val aspectNames = arrayOf("Fit", "4:3", "Stretch", "Pixel-perfect")
     private var aspect = 0
@@ -121,6 +131,10 @@ class MainActivity : AppCompatActivity() {
     private var touchLevel = 2
     private var padAutoHidden = false
     private var touchMask = 0
+
+    private val profiles = ArrayList<Profile>()
+    private var gameProfiles = JSONObject()
+    private var activeProfile = DEFAULT_PROFILE
 
     private val games = ArrayList<Game>()
 
@@ -148,7 +162,10 @@ class MainActivity : AppCompatActivity() {
                 added++
             }
         }
-        if (added > 0) saveLibrary()
+        if (added > 0) {
+            saveLibrary()
+            libTab = 1
+        }
         if (uris != null && uris.isNotEmpty()) {
             romStatus = if (added > 0) "$added game(s) added to library" else "Already in library"
         }
@@ -181,6 +198,7 @@ class MainActivity : AppCompatActivity() {
         btnAspect = makeButton { cycleAspect() }
         btnFull = makeButton { toggleFullscreen() }
         btnTouch = makeButton { cycleTouch() }
+        btnProfile = makeButton { showProfileMenu() }
         btnEditPad = makeButton { enterEdit() }.apply { text = "Edit pad" }
         btnAdd = makeButton { addPicker.launch(arrayOf("*/*")) }.apply { text = "Add games" }
         btnExit = makeButton { quitApp() }.apply { text = "Exit app" }
@@ -188,7 +206,7 @@ class MainActivity : AppCompatActivity() {
         topBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             for (b in listOf(btnSaveExit, btnLibrary, btnQuitGame, btnAspect, btnFull, btnTouch,
-                btnEditPad, btnAdd, btnExit)) {
+                btnProfile, btnEditPad, btnAdd, btnExit)) {
                 addView(b, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             }
         }
@@ -208,7 +226,7 @@ class MainActivity : AppCompatActivity() {
         editBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             visibility = View.GONE
-            addView(editLabel, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 2.4f))
+            addView(editLabel, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 2.6f))
             for (b in listOf(btnSmaller, btnBigger, btnAction, btnVis, btnReset, btnDone)) {
                 addView(b, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             }
@@ -227,13 +245,13 @@ class MainActivity : AppCompatActivity() {
         }
         pad = TouchPad(this).apply {
             visibility = View.GONE
-            importLayout(prefs.getString("padlayout", null))
             onMask = { m ->
                 touchMask = m
                 push(0)
             }
             onSelect = { updateEditBar() }
         }
+        loadProfiles()
 
         // Small corner button, only shown while fullscreen is on.
         menuBtn = Button(this).apply {
@@ -245,11 +263,26 @@ class MainActivity : AppCompatActivity() {
             setOnClickListener { showMenu() }
         }
 
+        // ---- library: two tabs (pages) ----
+        btnTabRecent = makeButton { libTab = 0; rebuildLibrary() }.apply { text = "Recently played" }
+        btnTabAll = makeButton { libTab = 1; rebuildLibrary() }.apply { text = "Game library" }
+        val tabRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(btnTabRecent, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(btnTabAll, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        }
         libraryList = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(24, 8, 24, 24)
         }
-        library = ScrollView(this).apply { addView(libraryList) }
+        val libraryScroll = ScrollView(this).apply { addView(libraryList) }
+        library = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(tabRow, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(libraryScroll, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        }
 
         val matchAll = {
             FrameLayout.LayoutParams(
@@ -292,6 +325,7 @@ class MainActivity : AppCompatActivity() {
         })
 
         loadLibrary()
+        libTab = if (games.any { it.lastPlayed > 0L }) 0 else 1
         showLibrary()
     }
 
@@ -304,6 +338,177 @@ class MainActivity : AppCompatActivity() {
         super.onPause()
         if (editing) saveLayout()
         stopEmu()
+    }
+
+    // Pauses the game while a dialog is open and resumes when the last one closes.
+    private fun showPaused(b: AlertDialog.Builder) {
+        stopEmu()
+        openDialogs++
+        b.setOnDismissListener {
+            openDialogs--
+            if (openDialogs <= 0) {
+                openDialogs = 0
+                startEmu()
+            }
+        }
+        b.show()
+    }
+
+    private fun askName(title: String, initial: String, onOk: (String) -> Unit) {
+        val input = EditText(this).apply {
+            setText(initial)
+            setSelectAllOnFocus(true)
+            isSingleLine = true
+        }
+        showPaused(
+            AlertDialog.Builder(this)
+                .setTitle(title)
+                .setView(input)
+                .setPositiveButton("OK") { _, _ ->
+                    val n = input.text.toString().trim()
+                    if (n.isNotEmpty()) onOk(n)
+                }
+                .setNegativeButton("Cancel", null)
+        )
+    }
+
+    // ---------------- Controller profiles ----------------
+
+    private fun loadProfiles() {
+        profiles.clear()
+        try {
+            val arr = JSONArray(prefs.getString("profiles", "[]"))
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                profiles.add(Profile(o.getString("n"), if (o.has("l")) o.getString("l") else null))
+            }
+        } catch (e: Exception) {
+        }
+        if (profiles.none { it.name == DEFAULT_PROFILE }) profiles.add(0, Profile(DEFAULT_PROFILE, null))
+        gameProfiles = try {
+            JSONObject(prefs.getString("gameprofiles", "{}"))
+        } catch (e: Exception) {
+            JSONObject()
+        }
+    }
+
+    private fun saveProfiles() {
+        val arr = JSONArray()
+        for (p in profiles) {
+            val o = JSONObject().put("n", p.name)
+            if (p.layout != null) o.put("l", p.layout)
+            arr.put(o)
+        }
+        prefs.edit()
+            .putString("profiles", arr.toString())
+            .putString("gameprofiles", gameProfiles.toString())
+            .apply()
+    }
+
+    private fun profileNameFor(g: Game): String {
+        val n = gameProfiles.optString(stateKey(g), DEFAULT_PROFILE)
+        return if (profiles.any { it.name == n }) n else DEFAULT_PROFILE
+    }
+
+    private fun setProfileFor(g: Game, name: String) {
+        gameProfiles.put(stateKey(g), name)
+        saveProfiles()
+    }
+
+    private fun applyProfile(name: String) {
+        val p = profiles.firstOrNull { it.name == name } ?: profiles[0]
+        activeProfile = p.name
+        if (p.layout == null || !pad.importLayout(p.layout)) pad.resetLayout()
+    }
+
+    private fun showProfileMenu() {
+        val g = currentGame ?: return
+        val names = profiles.map { (if (it.name == activeProfile) "\u2713  " else "      ") + it.name }
+        val items = names + listOf("+  New profile...", "Rename this profile...", "Delete this profile")
+        showPaused(
+            AlertDialog.Builder(this)
+                .setTitle("Controller profile")
+                .setItems(items.toTypedArray()) { _, which ->
+                    when {
+                        which < profiles.size -> {
+                            val n = profiles[which].name
+                            setProfileFor(g, n)
+                            applyProfile(n)
+                            updateBar()
+                        }
+                        which == profiles.size -> newProfile(g)
+                        which == profiles.size + 1 -> renameProfile()
+                        else -> deleteProfile(g)
+                    }
+                }
+        )
+    }
+
+    private fun newProfile(g: Game) {
+        askName("New profile name", "") { n ->
+            if (profiles.any { it.name.equals(n, ignoreCase = true) }) {
+                romStatus = "A profile named \"$n\" already exists"
+                refreshStatus()
+            } else {
+                // starts as a copy of the layout you are using now
+                profiles.add(Profile(n, pad.exportLayout()))
+                setProfileFor(g, n)
+                applyProfile(n)
+                updateBar()
+                romStatus = "Profile \"$n\" created - use Edit pad to change it"
+                refreshStatus()
+            }
+        }
+    }
+
+    private fun renameProfile() {
+        val old = activeProfile
+        if (old == DEFAULT_PROFILE) {
+            romStatus = "The Default profile cannot be renamed"
+            refreshStatus()
+            return
+        }
+        askName("Rename profile", old) { n ->
+            if (n != old && profiles.any { it.name.equals(n, ignoreCase = true) }) {
+                romStatus = "A profile named \"$n\" already exists"
+                refreshStatus()
+            } else {
+                profiles.firstOrNull { it.name == old }?.name = n
+                val keys = ArrayList<String>()
+                val iter = gameProfiles.keys()
+                while (iter.hasNext()) keys.add(iter.next())
+                for (k in keys) if (gameProfiles.optString(k) == old) gameProfiles.put(k, n)
+                activeProfile = n
+                saveProfiles()
+                updateBar()
+            }
+        }
+    }
+
+    private fun deleteProfile(g: Game) {
+        val old = activeProfile
+        if (old == DEFAULT_PROFILE) {
+            romStatus = "The Default profile cannot be deleted"
+            refreshStatus()
+            return
+        }
+        showPaused(
+            AlertDialog.Builder(this)
+                .setTitle("Delete profile \"$old\"?")
+                .setMessage("Games that use it will switch to the Default profile.")
+                .setPositiveButton("Delete") { _, _ ->
+                    profiles.removeAll { it.name == old }
+                    val keys = ArrayList<String>()
+                    val iter = gameProfiles.keys()
+                    while (iter.hasNext()) keys.add(iter.next())
+                    for (k in keys) if (gameProfiles.optString(k) == old) gameProfiles.remove(k)
+                    setProfileFor(g, DEFAULT_PROFILE)
+                    applyProfile(DEFAULT_PROFILE)
+                    saveProfiles()
+                    updateBar()
+                }
+                .setNegativeButton("Cancel", null)
+        )
     }
 
     // ---------------- Save / quit ----------------
@@ -393,8 +598,10 @@ class MainActivity : AppCompatActivity() {
 
     // ---------------- Pad editor ----------------
 
+    // Saves the layout you are editing into the active profile.
     private fun saveLayout() {
-        prefs.edit().putString("padlayout", pad.exportLayout()).apply()
+        profiles.firstOrNull { it.name == activeProfile }?.layout = pad.exportLayout()
+        saveProfiles()
     }
 
     private fun enterEdit() {
@@ -419,15 +626,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateEditBar() {
-        editLabel.text = "${pad.describe()}\nDrag to move \u00B7 pinch to resize"
-        val notPad = pad.selected != 0
-        btnAction.isEnabled = notPad
-        btnVis.isEnabled = notPad
-        btnVis.text = if (notPad && !pad.items[pad.selected].visible) "Show" else "Hide"
+        editLabel.text = "${pad.describe()}  \u00B7  Profile: $activeProfile\n" +
+            "Drag to move \u00B7 pinch to resize"
+        btnVis.text = if (pad.items[pad.selected].visible) "Hide" else "Show"
     }
 
     private fun chooseAction() {
-        if (pad.selected == 0) return
         AlertDialog.Builder(this)
             .setTitle("What should this button do?")
             .setItems(TouchPad.ACTION_NAMES) { _, which ->
@@ -439,7 +643,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun confirmResetPad() {
         AlertDialog.Builder(this)
-            .setTitle("Reset touch pad?")
+            .setTitle("Reset this profile's layout?")
             .setMessage("All buttons go back to their default size, place and action.")
             .setPositiveButton("Reset") { _, _ ->
                 pad.resetLayout()
@@ -453,7 +657,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun showMenu() {
         if (!inGame) return
-        stopEmu()   // pause while the menu is open
         val items = arrayOf(
             "Save & exit",
             "Library (pause game)",
@@ -461,23 +664,25 @@ class MainActivity : AppCompatActivity() {
             "Aspect: ${aspectNames[aspect]}",
             "Fullscreen: ${if (fullscreenPref) "On" else "Off"}",
             "Touch pad: ${touchNames[touchLevel]}",
+            "Pad profile: $activeProfile",
             "Edit touch pad"
         )
-        AlertDialog.Builder(this)
-            .setTitle("Menu")
-            .setItems(items) { _, which ->
-                when (which) {
-                    0 -> saveAndExit()
-                    1 -> showLibrary()
-                    2 -> quitGame()
-                    3 -> cycleAspect()
-                    4 -> toggleFullscreen()
-                    5 -> cycleTouch()
-                    6 -> enterEdit()
+        showPaused(
+            AlertDialog.Builder(this)
+                .setTitle("Menu")
+                .setItems(items) { _, which ->
+                    when (which) {
+                        0 -> saveAndExit()
+                        1 -> showLibrary()
+                        2 -> quitGame()
+                        3 -> cycleAspect()
+                        4 -> toggleFullscreen()
+                        5 -> cycleTouch()
+                        6 -> showProfileMenu()
+                        7 -> enterEdit()
+                    }
                 }
-            }
-            .setOnDismissListener { startEmu() }   // does nothing if we left the game or are editing
-            .show()
+        )
     }
 
     // ---------------- Display and touch options ----------------
@@ -491,12 +696,14 @@ class MainActivity : AppCompatActivity() {
         btnAspect.visibility = g
         btnFull.visibility = g
         btnTouch.visibility = g
+        btnProfile.visibility = g
         btnEditPad.visibility = g
         btnAdd.visibility = l
         btnExit.visibility = l
         btnAspect.text = "Aspect: ${aspectNames[aspect]}"
         btnFull.text = "Fullscreen: ${if (fullscreenPref) "On" else "Off"}"
         btnTouch.text = "Touch pad: ${touchNames[touchLevel]}"
+        btnProfile.text = "Pad: $activeProfile"
     }
 
     private fun cycleAspect() {
@@ -606,7 +813,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun gameRow(g: Game): LinearLayout {
+    private fun gameRow(g: Game, withDelete: Boolean): LinearLayout {
         val saved = hasSave(g)
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -615,18 +822,28 @@ class MainActivity : AppCompatActivity() {
                 isAllCaps = false
                 gravity = Gravity.START or Gravity.CENTER_VERTICAL
                 setOnClickListener { onGameTap(g) }
-                setOnLongClickListener { confirmDelete(g); true }
+                setOnLongClickListener { showGameOptions(g); true }
             }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            addView(Button(this@MainActivity).apply {
-                text = "\u2715"
-                setOnClickListener { confirmDelete(g) }
-            }, LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            if (withDelete) {
+                addView(Button(this@MainActivity).apply {
+                    text = "\u2715"
+                    setOnClickListener { confirmDelete(g) }
+                }, LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            }
         }
+    }
+
+    private fun updateTabs() {
+        btnTabRecent.alpha = if (libTab == 0) 1f else 0.5f
+        btnTabAll.alpha = if (libTab == 1) 1f else 0.5f
+        btnTabRecent.setTypeface(null, if (libTab == 0) Typeface.BOLD else Typeface.NORMAL)
+        btnTabAll.setTypeface(null, if (libTab == 1) Typeface.BOLD else Typeface.NORMAL)
     }
 
     private fun rebuildLibrary() {
         libraryList.removeAllViews()
+        updateTabs()
 
         if (romLoaded) {
             libraryList.addView(Button(this).apply {
@@ -635,37 +852,50 @@ class MainActivity : AppCompatActivity() {
             }, lp())
         }
 
-        if (games.isEmpty()) {
-            libraryList.addView(TextView(this).apply {
-                text = "No games yet.\nTap \"Add games\" and select your .nes files."
-                textSize = 16f
-                setPadding(8, 32, 8, 8)
-            }, lp())
-            return
-        }
+        if (libTab == 0) buildRecentPage() else buildAllPage()
+    }
 
+    private fun buildRecentPage() {
         val recent = games.filter { it.lastPlayed > 0L }
             .sortedByDescending { it.lastPlayed }
-            .take(10)
+            .take(15)
         libraryList.addView(
             headerRow("Recently played", if (recent.isNotEmpty()) "Clear list" else null) {
                 confirmClearRecent()
             }, lp())
         if (recent.isEmpty()) {
             libraryList.addView(TextView(this).apply {
-                text = "No recently played games"
-                textSize = 13f
-                setPadding(8, 8, 8, 8)
+                text = "Nothing played recently.\nOpen the \"Game library\" tab to start a game."
+                textSize = 14f
+                setPadding(8, 16, 8, 8)
             }, lp())
         } else {
-            for (g in recent) libraryList.addView(gameRow(g), lp())
+            for (g in recent) libraryList.addView(gameRow(g, false), lp())
         }
-
-        libraryList.addView(headerRow("All games  (${games.size})", null) {}, lp())
-        for (g in games.sortedBy { it.name.lowercase() }) libraryList.addView(gameRow(g), lp())
-
         libraryList.addView(TextView(this).apply {
-            text = "\uD83D\uDCBE = saved game   \u00B7   \u2715 removes a game from the library (your ROM file stays on the phone)"
+            text = "\uD83D\uDCBE = saved game   \u00B7   hold a game for more options"
+            textSize = 11f
+            setPadding(8, 24, 8, 8)
+        }, lp())
+    }
+
+    private fun buildAllPage() {
+        libraryList.addView(
+            headerRow("All games  (${games.size})", "Add games") {
+                addPicker.launch(arrayOf("*/*"))
+            }, lp())
+        if (games.isEmpty()) {
+            libraryList.addView(TextView(this).apply {
+                text = "No games yet.\nTap \"Add games\" and select your .nes files."
+                textSize = 14f
+                setPadding(8, 16, 8, 8)
+            }, lp())
+        } else {
+            for (g in games.sortedBy { it.name.lowercase() }) libraryList.addView(gameRow(g, true), lp())
+        }
+        libraryList.addView(TextView(this).apply {
+            text = "\uD83D\uDCBE = saved game   \u00B7   \u2715 removes a game from the library " +
+                "(your ROM file stays on the phone)   \u00B7   hold a game for more options"
             textSize = 11f
             setPadding(8, 24, 8, 8)
         }, lp())
@@ -683,6 +913,39 @@ class MainActivity : AppCompatActivity() {
         } else {
             playGame(g, false)
         }
+    }
+
+    private fun showGameOptions(g: Game) {
+        val labels = ArrayList<String>()
+        val actions = ArrayList<() -> Unit>()
+        labels.add("Controller profile: ${profileNameFor(g)}")
+        actions.add { chooseProfileForGame(g) }
+        if (hasSave(g)) {
+            labels.add("Delete saved game")
+            actions.add { confirmDeleteSave(g) }
+        }
+        labels.add("Remove from library")
+        actions.add { confirmDelete(g) }
+        AlertDialog.Builder(this)
+            .setTitle(g.name)
+            .setItems(labels.toTypedArray()) { _, which -> actions[which]() }
+            .show()
+    }
+
+    private fun chooseProfileForGame(g: Game) {
+        val names = profiles.map { it.name }
+        AlertDialog.Builder(this)
+            .setTitle("Controller profile for ${g.name}")
+            .setSingleChoiceItems(names.toTypedArray(), names.indexOf(profileNameFor(g))) { d, which ->
+                setProfileFor(g, names[which])
+                if (currentGame === g) applyProfile(names[which])
+                d.dismiss()
+                romStatus = "${g.name}: profile \"${names[which]}\""
+                refreshStatus()
+                updateBar()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun confirmDeleteSave(g: Game) {
@@ -711,6 +974,8 @@ class MainActivity : AppCompatActivity() {
                     currentName = ""
                     currentGame = null
                 }
+                gameProfiles.remove(stateKey(g))
+                saveProfiles()
                 games.remove(g)
                 stateFile(g).delete()
                 saveLibrary()
@@ -796,6 +1061,7 @@ class MainActivity : AppCompatActivity() {
                     currentGame = g
                     g.lastPlayed = System.currentTimeMillis()
                     saveLibrary()
+                    applyProfile(profileNameFor(g))
                     clearInput()
                     showGame()
                     if (note.isNotEmpty()) {
@@ -818,7 +1084,7 @@ class MainActivity : AppCompatActivity() {
     // ---------------- Emulation + audio ----------------
 
     private fun startEmu() {
-        if (!romLoaded || !inGame || editing || running) return
+        if (!romLoaded || !inGame || editing || openDialogs > 0 || running) return
         running = true
         emuThread = Thread {
             val pixels = IntArray(256 * 240)
@@ -997,6 +1263,8 @@ class MainActivity : AppCompatActivity() {
     external fun nativeLoadState(data: ByteArray): Boolean
 
     companion object {
+        const val DEFAULT_PROFILE = "Default"
+
         init {
             System.loadLibrary("nesemu")
         }
