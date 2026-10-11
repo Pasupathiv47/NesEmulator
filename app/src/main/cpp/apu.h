@@ -12,6 +12,8 @@ public:
     int takeSamples(int16_t* out, int maxCount);
 
 private:
+    friend struct StateIO;
+
     struct Env {
         bool start = false, loop = false, constVol = false;
         uint8_t vol = 0, divider = 0, decay = 0;
