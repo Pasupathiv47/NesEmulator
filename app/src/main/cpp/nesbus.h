@@ -50,6 +50,8 @@ public:
             apu->write(a, val);
         } else if (a >= 0x6000 && a < 0x8000) {
             prgRam[a - 0x6000] = val;
+        } else if (a >= 0x8000) {
+            cart->cpuWrite(a, val);
         }
     }
 
