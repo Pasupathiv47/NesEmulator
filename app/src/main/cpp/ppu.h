@@ -18,6 +18,8 @@ public:
     uint32_t fb[256 * 240];
 
 private:
+    friend struct StateIO;
+
     Cartridge* cart;
     uint8_t vram[2048];
     uint8_t pal[32];
