@@ -57,6 +57,8 @@ public:
     int stall = 0;
 
 private:
+    friend struct StateIO;
+
     Cartridge* cart;
     PPU* ppu;
     APU* apu;
