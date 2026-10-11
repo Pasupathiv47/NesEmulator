@@ -87,12 +87,17 @@ class MainActivity : AppCompatActivity() {
     private lateinit var library: ScrollView
     private lateinit var libraryList: LinearLayout
     private lateinit var topBar: LinearLayout
+    private lateinit var editBar: LinearLayout
+    private lateinit var editLabel: TextView
+    private lateinit var btnVis: Button
+    private lateinit var btnAction: Button
     private lateinit var menuBtn: Button
     private lateinit var btnLibrary: Button
     private lateinit var btnQuitGame: Button
     private lateinit var btnAspect: Button
     private lateinit var btnFull: Button
     private lateinit var btnTouch: Button
+    private lateinit var btnEditPad: Button
     private lateinit var btnAdd: Button
     private lateinit var btnExit: Button
 
@@ -101,6 +106,7 @@ class MainActivity : AppCompatActivity() {
     private var currentName = ""
     private var romLoaded = false
     private var inGame = false
+    private var editing = false
 
     private val aspectNames = arrayOf("Fit", "4:3", "Stretch", "Pixel-perfect")
     private var aspect = 0
@@ -170,12 +176,35 @@ class MainActivity : AppCompatActivity() {
         btnAspect = makeButton { cycleAspect() }
         btnFull = makeButton { toggleFullscreen() }
         btnTouch = makeButton { cycleTouch() }
+        btnEditPad = makeButton { enterEdit() }.apply { text = "Edit pad" }
         btnAdd = makeButton { addPicker.launch(arrayOf("*/*")) }.apply { text = "Add games" }
         btnExit = makeButton { quitApp() }.apply { text = "Exit app" }
 
         topBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            for (b in listOf(btnLibrary, btnQuitGame, btnAspect, btnFull, btnTouch, btnAdd, btnExit)) {
+            for (b in listOf(btnLibrary, btnQuitGame, btnAspect, btnFull, btnTouch,
+                btnEditPad, btnAdd, btnExit)) {
+                addView(b, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            }
+        }
+
+        // ---- pad editor bar ----
+        editLabel = TextView(this).apply {
+            textSize = 11f
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(12, 4, 12, 4)
+        }
+        val btnSmaller = makeButton { pad.changeSize(0.9f); updateEditBar() }.apply { text = "Size \u2212" }
+        val btnBigger = makeButton { pad.changeSize(1.1f); updateEditBar() }.apply { text = "Size +" }
+        btnAction = makeButton { chooseAction() }.apply { text = "Action" }
+        btnVis = makeButton { pad.toggleVisible(); updateEditBar() }.apply { text = "Hide" }
+        val btnReset = makeButton { confirmResetPad() }.apply { text = "Reset" }
+        val btnDone = makeButton { exitEdit() }.apply { text = "Done" }
+        editBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            visibility = View.GONE
+            addView(editLabel, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 2.4f))
+            for (b in listOf(btnSmaller, btnBigger, btnAction, btnVis, btnReset, btnDone)) {
                 addView(b, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             }
         }
@@ -193,10 +222,12 @@ class MainActivity : AppCompatActivity() {
         }
         pad = TouchPad(this).apply {
             visibility = View.GONE
+            importLayout(prefs.getString("padlayout", null))
             onMask = { m ->
                 touchMask = m
                 push(0)
             }
+            onSelect = { updateEditBar() }
         }
 
         // Small corner button, only shown while fullscreen is on.
@@ -236,6 +267,8 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.VERTICAL
             addView(topBar, LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(editBar, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(content, LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
             addView(status, LinearLayout.LayoutParams(
@@ -245,7 +278,11 @@ class MainActivity : AppCompatActivity() {
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                if (inGame) showLibrary() else quitApp()
+                when {
+                    editing -> exitEdit()
+                    inGame -> showLibrary()
+                    else -> quitApp()
+                }
             }
         })
 
@@ -260,6 +297,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
+        if (editing) saveLayout()
         stopEmu()
     }
 
@@ -282,6 +320,64 @@ class MainActivity : AppCompatActivity() {
         status.text = if (romStatus.isEmpty()) header else "$header\n$romStatus"
     }
 
+    // ---------------- Pad editor ----------------
+
+    private fun saveLayout() {
+        prefs.edit().putString("padlayout", pad.exportLayout()).apply()
+    }
+
+    private fun enterEdit() {
+        if (!inGame || editing) return
+        stopEmu()   // pause the game while editing
+        editing = true
+        padAutoHidden = false
+        pad.editing = true
+        updatePad()
+        applyFullscreen()
+        updateEditBar()
+    }
+
+    private fun exitEdit() {
+        if (!editing) return
+        editing = false
+        pad.editing = false
+        saveLayout()
+        updatePad()
+        applyFullscreen()
+        startEmu()
+    }
+
+    private fun updateEditBar() {
+        editLabel.text = "${pad.describe()}\nDrag to move \u00B7 pinch to resize"
+        val notPad = pad.selected != 0
+        btnAction.isEnabled = notPad
+        btnVis.isEnabled = notPad
+        btnVis.text = if (notPad && !pad.items[pad.selected].visible) "Show" else "Hide"
+    }
+
+    private fun chooseAction() {
+        if (pad.selected == 0) return
+        AlertDialog.Builder(this)
+            .setTitle("What should this button do?")
+            .setItems(TouchPad.ACTION_NAMES) { _, which ->
+                pad.setAction(which)
+                updateEditBar()
+            }
+            .show()
+    }
+
+    private fun confirmResetPad() {
+        AlertDialog.Builder(this)
+            .setTitle("Reset touch pad?")
+            .setMessage("All buttons go back to their default size, place and action.")
+            .setPositiveButton("Reset") { _, _ ->
+                pad.resetLayout()
+                updateEditBar()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
     // ---------------- In-game menu (used in fullscreen) ----------------
 
     private fun showMenu() {
@@ -292,7 +388,8 @@ class MainActivity : AppCompatActivity() {
             "Quit game",
             "Aspect: ${aspectNames[aspect]}",
             "Fullscreen: ${if (fullscreenPref) "On" else "Off"}",
-            "Touch pad: ${touchNames[touchLevel]}"
+            "Touch pad: ${touchNames[touchLevel]}",
+            "Edit touch pad"
         )
         AlertDialog.Builder(this)
             .setTitle("Menu")
@@ -303,9 +400,10 @@ class MainActivity : AppCompatActivity() {
                     2 -> cycleAspect()
                     3 -> toggleFullscreen()
                     4 -> cycleTouch()
+                    5 -> enterEdit()
                 }
             }
-            .setOnDismissListener { startEmu() }   // does nothing if we left the game
+            .setOnDismissListener { startEmu() }   // does nothing if we left the game or are editing
             .show()
     }
 
@@ -319,6 +417,7 @@ class MainActivity : AppCompatActivity() {
         btnAspect.visibility = g
         btnFull.visibility = g
         btnTouch.visibility = g
+        btnEditPad.visibility = g
         btnAdd.visibility = l
         btnExit.visibility = l
         btnAspect.text = "Aspect: ${aspectNames[aspect]}"
@@ -342,7 +441,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updatePad() {
-        val show = inGame && touchLevel > 0 && !padAutoHidden
+        val show = inGame && (editing || (touchLevel > 0 && !padAutoHidden))
         pad.opacity = touchOpacity[touchLevel]
         if (show) {
             pad.visibility = View.VISIBLE
@@ -367,15 +466,13 @@ class MainActivity : AppCompatActivity() {
         if (on) {
             c.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             c.hide(WindowInsetsCompat.Type.systemBars())
-            topBar.visibility = View.GONE
-            status.visibility = View.GONE
-            menuBtn.visibility = View.VISIBLE
         } else {
             c.show(WindowInsetsCompat.Type.systemBars())
-            topBar.visibility = View.VISIBLE
-            status.visibility = View.VISIBLE
-            menuBtn.visibility = View.GONE
         }
+        topBar.visibility = if (on || editing) View.GONE else View.VISIBLE
+        status.visibility = if (on) View.GONE else View.VISIBLE
+        menuBtn.visibility = if (on && !editing) View.VISIBLE else View.GONE
+        editBar.visibility = if (editing) View.VISIBLE else View.GONE
     }
 
     // ---------------- Library ----------------
@@ -464,6 +561,11 @@ class MainActivity : AppCompatActivity() {
 
     private fun showLibrary() {
         stopEmu()
+        if (editing) {
+            editing = false
+            pad.editing = false
+            saveLayout()
+        }
         inGame = false
         game.visibility = View.GONE
         library.visibility = View.VISIBLE
@@ -518,7 +620,7 @@ class MainActivity : AppCompatActivity() {
     // ---------------- Emulation + audio ----------------
 
     private fun startEmu() {
-        if (!romLoaded || !inGame || running) return
+        if (!romLoaded || !inGame || editing || running) return
         running = true
         emuThread = Thread {
             val pixels = IntArray(256 * 240)
@@ -639,7 +741,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        if (!inGame || event.keyCode == KeyEvent.KEYCODE_BACK) {
+        if (!inGame || editing || event.keyCode == KeyEvent.KEYCODE_BACK) {
             return super.dispatchKeyEvent(event)
         }
         // A real controller button hides the touch pad; tap the screen to bring it back.
@@ -665,7 +767,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
-        if (inGame &&
+        if (inGame && !editing &&
             hasSource(event.source, InputDevice.SOURCE_JOYSTICK) &&
             event.action == MotionEvent.ACTION_MOVE
         ) {
