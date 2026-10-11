@@ -32,14 +32,13 @@ void PPU::reset() {
 }
 
 uint16_t PPU::ntOffset(uint16_t a) const {
-    int table = (a >> 10) & 3;
-    table = cart->vertical ? (table & 1) : (table >> 1);
+    int table = cart->ntTable((a >> 10) & 3);
     return (uint16_t)(table * 0x400 + (a & 0x3FF));
 }
 
 uint8_t PPU::rd(uint16_t a) {
     a &= 0x3FFF;
-    if (a < 0x2000) return cart->chr.empty() ? 0 : cart->chr[a % cart->chr.size()];
+    if (a < 0x2000) return cart->ppuRead(a);
     if (a < 0x3F00) return vram[ntOffset(a & 0x2FFF)];
     return pal[palIndex(a)];
 }
@@ -47,7 +46,7 @@ uint8_t PPU::rd(uint16_t a) {
 void PPU::wr(uint16_t a, uint8_t val) {
     a &= 0x3FFF;
     if (a < 0x2000) {
-        if (cart->chrRam && !cart->chr.empty()) cart->chr[a % cart->chr.size()] = val;
+        cart->ppuWrite(a, val);
     } else if (a < 0x3F00) {
         vram[ntOffset(a & 0x2FFF)] = val;
     } else {
@@ -249,6 +248,7 @@ void PPU::tick() {
         if (dot == s0HitDot) status |= 0x40;
         if (rendering && dot == 256) incY();
         if (rendering && dot == 257) v = (v & ~0x041F) | (t & 0x041F);
+        if (rendering && dot == 260) cart->clockScanline();   // MMC3 scanline counter
     } else if (scanline == 241) {
         if (dot == 1) {
             status |= 0x80;
@@ -259,6 +259,7 @@ void PPU::tick() {
         if (dot == 1) status &= ~0xE0;
         if (rendering && dot == 257) v = (v & ~0x041F) | (t & 0x041F);
         if (rendering && dot >= 280 && dot <= 304) v = (v & ~0x7BE0) | (t & 0x7BE0);
+        if (rendering && dot == 260) cart->clockScanline();
     }
 
     if (++dot > 340) {
