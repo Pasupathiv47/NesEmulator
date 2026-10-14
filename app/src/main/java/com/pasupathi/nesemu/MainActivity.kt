@@ -14,6 +14,7 @@ import android.media.AudioTrack
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import android.view.Gravity
 import android.view.InputDevice
@@ -25,6 +26,8 @@ import android.view.WindowManager
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -95,13 +98,14 @@ class MainActivity : AppCompatActivity() {
     private lateinit var libraryList: LinearLayout
     private lateinit var btnTabRecent: Button
     private lateinit var btnTabAll: Button
-    private lateinit var topBar: LinearLayout
+    private lateinit var topBar: View
     private lateinit var editBar: LinearLayout
     private lateinit var editLabel: TextView
     private lateinit var btnVis: Button
     private lateinit var btnAction: Button
     private lateinit var menuBtn: Button
     private lateinit var btnSaveExit: Button
+    private lateinit var btnReset: Button
     private lateinit var btnLibrary: Button
     private lateinit var btnQuitGame: Button
     private lateinit var btnAspect: Button
@@ -110,6 +114,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnProfile: Button
     private lateinit var btnEditPad: Button
     private lateinit var btnAdd: Button
+    private lateinit var btnAddFolder: Button
     private lateinit var btnExit: Button
 
     private var header = ""
@@ -173,6 +178,23 @@ class MainActivity : AppCompatActivity() {
         if (!inGame) rebuildLibrary()
     }
 
+    private val folderPicker = registerForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { tree: Uri? ->
+        if (tree != null) {
+            try {
+                contentResolver.takePersistableUriPermission(tree, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            } catch (e: Exception) {
+            }
+            romStatus = "Scanning folder..."
+            refreshStatus()
+            Thread {
+                val found = scanFolder(tree)
+                runOnUiThread { addFoundGames(found) }
+            }.start()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         header = "NES core: ${nativeVersion()}  |  ${nativeCpuTest()}"
@@ -193,6 +215,7 @@ class MainActivity : AppCompatActivity() {
             setOnClickListener { action() }
         }
         btnSaveExit = makeButton { saveAndExit() }.apply { text = "Save & exit" }
+        btnReset = makeButton { confirmReset() }.apply { text = "Reset" }
         btnLibrary = makeButton { showLibrary() }.apply { text = "Library" }
         btnQuitGame = makeButton { quitGame() }.apply { text = "Quit game" }
         btnAspect = makeButton { cycleAspect() }
@@ -201,14 +224,21 @@ class MainActivity : AppCompatActivity() {
         btnProfile = makeButton { showProfileMenu() }
         btnEditPad = makeButton { enterEdit() }.apply { text = "Edit pad" }
         btnAdd = makeButton { addPicker.launch(arrayOf("*/*")) }.apply { text = "Add games" }
+        btnAddFolder = makeButton { folderPicker.launch(null) }.apply { text = "Add folder" }
         btnExit = makeButton { quitApp() }.apply { text = "Exit app" }
 
-        topBar = LinearLayout(this).apply {
+        // Scrolls sideways when there are more buttons than fit on screen.
+        val topRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            for (b in listOf(btnSaveExit, btnLibrary, btnQuitGame, btnAspect, btnFull, btnTouch,
-                btnProfile, btnEditPad, btnAdd, btnExit)) {
-                addView(b, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            for (b in listOf(btnSaveExit, btnReset, btnLibrary, btnQuitGame, btnAspect, btnFull,
+                btnTouch, btnProfile, btnEditPad, btnAdd, btnAddFolder, btnExit)) {
+                addView(b, LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             }
+        }
+        topBar = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            addView(topRow)
         }
 
         // ---- pad editor bar ----
@@ -221,13 +251,13 @@ class MainActivity : AppCompatActivity() {
         val btnBigger = makeButton { pad.changeSize(1.1f); updateEditBar() }.apply { text = "Size +" }
         btnAction = makeButton { chooseAction() }.apply { text = "Action" }
         btnVis = makeButton { pad.toggleVisible(); updateEditBar() }.apply { text = "Hide" }
-        val btnReset = makeButton { confirmResetPad() }.apply { text = "Reset" }
+        val btnResetPad = makeButton { confirmResetPad() }.apply { text = "Reset pad" }
         val btnDone = makeButton { exitEdit() }.apply { text = "Done" }
         editBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             visibility = View.GONE
             addView(editLabel, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 2.6f))
-            for (b in listOf(btnSmaller, btnBigger, btnAction, btnVis, btnReset, btnDone)) {
+            for (b in listOf(btnSmaller, btnBigger, btnAction, btnVis, btnResetPad, btnDone)) {
                 addView(b, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             }
         }
@@ -263,7 +293,23 @@ class MainActivity : AppCompatActivity() {
             setOnClickListener { showMenu() }
         }
 
-        // ---- library: two tabs (pages) ----
+        // ---- library: logo header + two tabs (pages) ----
+        val dpx = { v: Int -> (v * resources.displayMetrics.density).toInt() }
+        val brand = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dpx(12), dpx(6), dpx(12), dpx(6))
+            addView(ImageView(this@MainActivity).apply {
+                setImageResource(R.drawable.ic_logo)
+            }, LinearLayout.LayoutParams(dpx(44), dpx(44)))
+            addView(TextView(this@MainActivity).apply {
+                text = "NES Emu"
+                textSize = 20f
+                setTypeface(null, Typeface.BOLD)
+                setPadding(dpx(12), 0, 0, 0)
+            }, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
         btnTabRecent = makeButton { libTab = 0; rebuildLibrary() }.apply { text = "Recently played" }
         btnTabAll = makeButton { libTab = 1; rebuildLibrary() }.apply { text = "Game library" }
         val tabRow = LinearLayout(this).apply {
@@ -278,6 +324,8 @@ class MainActivity : AppCompatActivity() {
         val libraryScroll = ScrollView(this).apply { addView(libraryList) }
         library = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            addView(brand, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(tabRow, LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(libraryScroll, LinearLayout.LayoutParams(
@@ -370,6 +418,63 @@ class MainActivity : AppCompatActivity() {
                 }
                 .setNegativeButton("Cancel", null)
         )
+    }
+
+    // ---------------- Folder scan ----------------
+
+    // Walks the chosen folder and all sub-folders and returns every .nes file found.
+    private fun scanFolder(tree: Uri): List<Pair<Uri, String>> {
+        val out = ArrayList<Pair<Uri, String>>()
+        val queue = ArrayDeque<String>()
+        queue.add(DocumentsContract.getTreeDocumentId(tree))
+        var visited = 0
+        while (queue.isNotEmpty() && visited < 3000 && out.size < 5000) {
+            val parent = queue.removeFirst()
+            visited++
+            val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, parent)
+            try {
+                contentResolver.query(
+                    children,
+                    arrayOf(
+                        DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                        DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                        DocumentsContract.Document.COLUMN_MIME_TYPE
+                    ),
+                    null, null, null
+                )?.use { c ->
+                    while (c.moveToNext()) {
+                        val id = c.getString(0) ?: continue
+                        val name = c.getString(1) ?: continue
+                        val mime = c.getString(2)
+                        if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
+                            queue.add(id)
+                        } else if (name.lowercase().endsWith(".nes")) {
+                            out.add(Pair(DocumentsContract.buildDocumentUriUsingTree(tree, id), name))
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+            }
+        }
+        return out
+    }
+
+    private fun addFoundGames(found: List<Pair<Uri, String>>) {
+        var added = 0
+        for ((u, n) in found) {
+            val s = u.toString()
+            if (games.none { it.uri == s }) {
+                games.add(Game(s, n.substringBeforeLast('.'), 0L))
+                added++
+            }
+        }
+        if (added > 0) {
+            saveLibrary()
+            libTab = 1
+        }
+        romStatus = "Folder scan: ${found.size} .nes file(s) found, $added new"
+        refreshStatus()
+        if (!inGame) rebuildLibrary()
     }
 
     // ---------------- Controller profiles ----------------
@@ -511,7 +616,7 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
-    // ---------------- Save / quit ----------------
+    // ---------------- Save / reset / quit ----------------
 
     private fun stateKey(g: Game): String {
         val d = MessageDigest.getInstance("SHA-1").digest(g.uri.toByteArray())
@@ -552,6 +657,36 @@ class MainActivity : AppCompatActivity() {
             refreshStatus()
             startEmu()
         }
+    }
+
+    private fun confirmReset() {
+        val g = currentGame ?: return
+        showPaused(
+            AlertDialog.Builder(this)
+                .setTitle("Reset game?")
+                .setMessage("Restarts \"$currentName\" from the very beginning, like pressing the " +
+                    "Reset button on the console. Multi-game carts return to their menu. " +
+                    "Unsaved progress is lost.")
+                .setPositiveButton("Reset") { _, _ -> resetGame(g) }
+                .setNegativeButton("Cancel", null)
+        )
+    }
+
+    // Power-cycles the console with the same game.
+    private fun resetGame(g: Game) {
+        stopEmu()
+        try {
+            val bytes = contentResolver.openInputStream(Uri.parse(g.uri))?.use { it.readBytes() }
+            if (bytes != null && nativeLoadRom(bytes).startsWith("ROM:")) {
+                clearInput()
+                romStatus = "Playing: $currentName (reset)"
+                refreshStatus()
+                startEmu()
+                return
+            }
+        } catch (e: Exception) {
+        }
+        closeGame("Could not reset the game")
     }
 
     private fun closeGame(message: String) {
@@ -659,6 +794,7 @@ class MainActivity : AppCompatActivity() {
         if (!inGame) return
         val items = arrayOf(
             "Save & exit",
+            "Reset game",
             "Library (pause game)",
             "Quit game (no save)",
             "Aspect: ${aspectNames[aspect]}",
@@ -673,13 +809,14 @@ class MainActivity : AppCompatActivity() {
                 .setItems(items) { _, which ->
                     when (which) {
                         0 -> saveAndExit()
-                        1 -> showLibrary()
-                        2 -> quitGame()
-                        3 -> cycleAspect()
-                        4 -> toggleFullscreen()
-                        5 -> cycleTouch()
-                        6 -> showProfileMenu()
-                        7 -> enterEdit()
+                        1 -> confirmReset()
+                        2 -> showLibrary()
+                        3 -> quitGame()
+                        4 -> cycleAspect()
+                        5 -> toggleFullscreen()
+                        6 -> cycleTouch()
+                        7 -> showProfileMenu()
+                        8 -> enterEdit()
                     }
                 }
         )
@@ -691,6 +828,7 @@ class MainActivity : AppCompatActivity() {
         val g = if (inGame) View.VISIBLE else View.GONE
         val l = if (inGame) View.GONE else View.VISIBLE
         btnSaveExit.visibility = g
+        btnReset.visibility = g
         btnLibrary.visibility = g
         btnQuitGame.visibility = g
         btnAspect.visibility = g
@@ -699,6 +837,7 @@ class MainActivity : AppCompatActivity() {
         btnProfile.visibility = g
         btnEditPad.visibility = g
         btnAdd.visibility = l
+        btnAddFolder.visibility = l
         btnExit.visibility = l
         btnAspect.text = "Aspect: ${aspectNames[aspect]}"
         btnFull.text = "Fullscreen: ${if (fullscreenPref) "On" else "Off"}"
@@ -792,7 +931,7 @@ class MainActivity : AppCompatActivity() {
     private fun lp() = LinearLayout.LayoutParams(
         ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
-    private fun headerRow(title: String, actionLabel: String?, action: () -> Unit): LinearLayout {
+    private fun headerRow(title: String, actions: List<Pair<String, () -> Unit>>): LinearLayout {
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -801,12 +940,12 @@ class MainActivity : AppCompatActivity() {
                 text = title
                 textSize = 14f
             }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            if (actionLabel != null) {
+            for ((label, act) in actions) {
                 addView(Button(this@MainActivity).apply {
-                    text = actionLabel
+                    text = label
                     isAllCaps = false
                     textSize = 12f
-                    setOnClickListener { action() }
+                    setOnClickListener { act() }
                 }, LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             }
@@ -859,10 +998,9 @@ class MainActivity : AppCompatActivity() {
         val recent = games.filter { it.lastPlayed > 0L }
             .sortedByDescending { it.lastPlayed }
             .take(15)
-        libraryList.addView(
-            headerRow("Recently played", if (recent.isNotEmpty()) "Clear list" else null) {
-                confirmClearRecent()
-            }, lp())
+        val actions: List<Pair<String, () -> Unit>> =
+            if (recent.isNotEmpty()) listOf("Clear list" to { confirmClearRecent() }) else emptyList()
+        libraryList.addView(headerRow("Recently played", actions), lp())
         if (recent.isEmpty()) {
             libraryList.addView(TextView(this).apply {
                 text = "Nothing played recently.\nOpen the \"Game library\" tab to start a game."
@@ -880,13 +1018,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun buildAllPage() {
-        libraryList.addView(
-            headerRow("All games  (${games.size})", "Add games") {
-                addPicker.launch(arrayOf("*/*"))
-            }, lp())
+        val actions: List<Pair<String, () -> Unit>> = listOf(
+            "Add games" to { addPicker.launch(arrayOf("*/*")) },
+            "Add folder" to { folderPicker.launch(null) }
+        )
+        libraryList.addView(headerRow("All games  (${games.size})", actions), lp())
         if (games.isEmpty()) {
             libraryList.addView(TextView(this).apply {
-                text = "No games yet.\nTap \"Add games\" and select your .nes files."
+                text = "No games yet.\nTap \"Add games\" to pick .nes files, or \"Add folder\" to add a whole folder."
                 textSize = 14f
                 setPadding(8, 16, 8, 8)
             }, lp())
