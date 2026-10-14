@@ -5,6 +5,8 @@
         android:required="false" />
     <application
         android:label="NES Emu"
+        android:icon="@drawable/ic_launcher"
+        android:roundIcon="@drawable/ic_launcher"
         android:theme="@style/Theme.AppCompat.NoActionBar">
         <activity
             android:name=".MainActivity"
